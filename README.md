@@ -140,7 +140,9 @@ resync. React re-renders are throttled to 4 Hz while telemetry arrives at 40
 frames per second, so the page stays smooth.
 
 **SCADA Live** — machine cards with status-coloured borders, a pulse indicator
-per received frame, and 60-point SVG sparklines (no charting library).
+per received frame, and 60-point SVG sparklines (no charting library). A
+throttled or failed machine gets a reset button: both states clear themselves
+after ~120 s, but nobody wants to wait that out during a demo.
 
 ![SCADA Live](docs/screenshots/scada-live.png)
 
@@ -265,5 +267,4 @@ they generalise:
 
 ## Licence
 
-No licence file is included yet; add one before sharing this publicly if you
-want to permit reuse.
+MIT — see [LICENSE](LICENSE).

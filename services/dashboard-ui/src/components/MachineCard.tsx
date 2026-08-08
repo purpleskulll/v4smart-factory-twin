@@ -1,6 +1,40 @@
-import { store, type Machine } from '../lib/store'
+import { useState } from 'react'
+
+import { sendControl, store, type Machine } from '../lib/store'
 import { Sparkline } from './Sparkline'
 import { STATUS_BG, STATUS_BORDER, StatusBadge } from './ui'
+
+/** Hebt Drosselung und Fehlerzustand einer Maschine sofort auf (§8 "reset").
+ *
+ * Ohne diesen Knopf müsste man abwarten: eine Drosselung läuft erst nach
+ * ttl_s = 120 s aus, ein ERROR nach 120 s Auto-Reset. Beides löst sich von
+ * selbst — aber wer vorführt oder testet, will nicht zwei Minuten warten. */
+function ResetButton({ machine }: { machine: Machine }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function reset() {
+    setBusy(true)
+    setError(null)
+    const res = await sendControl({ type: 'reset', machine_id: machine.id })
+    if (!res.ok) setError(res.error ?? 'fehlgeschlagen')
+    setBusy(false)
+  }
+
+  return (
+    <div className="mt-3">
+      <button
+        onClick={reset}
+        disabled={busy}
+        title="Drosselung und Fehlerzustand sofort aufheben (löst sich sonst nach ~120 s von selbst)"
+        className="w-full rounded border border-edge px-3 py-1.5 text-xs font-medium text-muted transition hover:border-accent/60 hover:text-accent disabled:opacity-40"
+      >
+        {busy ? 'wird zurückgesetzt…' : 'Zurücksetzen'}
+      </button>
+      {error && <div className="mt-1 text-xs text-error">{error}</div>}
+    </div>
+  )
+}
 
 /** Puls-Dot: leuchtet kurz auf, sobald ein Telemetry-Frame eintraf (§16). */
 function BlinkDot({ id, status }: { id: number; status: Machine['status'] }) {
@@ -54,6 +88,9 @@ export function MachineCard({ machine }: { machine: Machine }) {
       {machine.anomaly_score != null && (
         <div className="num mt-2 text-xs text-muted">anomaly_score {machine.anomaly_score.toFixed(3)}</div>
       )}
+
+      {/* Nur zeigen, wenn es etwas zurückzusetzen gibt. */}
+      {(machine.status === 'THROTTLED' || machine.status === 'ERROR') && <ResetButton machine={machine} />}
     </div>
   )
 }
