@@ -1,0 +1,20 @@
+# Secrets / lokale Konfiguration
+.env
+
+# Build-Artefakte
+**/node_modules/
+**/dist/
+**/target/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Claude Code lokale Session-Daten
+.claude/
+
+# OS/Editor
+.DS_Store
+*.swp
+
+# Screenshots der Sichtprüfung (Schritt 06/07)
+artifacts/

@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-bg text-text;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Zahlen laufen nicht, wenn sich Ziffern ändern (§16). */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Puls je empfangenem Telemetry-Frame (§16, View 2). */
+@keyframes pulse-dot {
+  0% { opacity: 1; transform: scale(1.25); }
+  100% { opacity: 0.25; transform: scale(1); }
+}
+.dot-pulse {
+  animation: pulse-dot 150ms ease-out;
+}

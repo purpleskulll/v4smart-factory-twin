@@ -1,0 +1,232 @@
+# ============================================================================
+# V4Smart Factory Digital Twin — APP-STACK
+# ----------------------------------------------------------------------------
+# Läuft KOMPLETT in der inneren Docker-Engine (DinD). Projektname: v4smart
+#
+# Profile:
+#   (ohne Profil)   Infrastruktur: redpanda, redpanda-init, questdb, console
+#   app             factory-simulator, middleware-core, predictive-ml, dashboard-ui
+#   edge            caddy (öffentliche URL, TLS via Let's Encrypt, Basic Auth)
+#
+#   make up-infra   → nur Infrastruktur (funktioniert ab Tag 1)
+#   make up         → alles (sobald die Services gebaut sind)
+#
+# Netz-Design:
+#   backend  = internal (kein Internet) — der gesamte Datenpfad
+#   edge     = normal (Caddy braucht Egress für ACME/Let's Encrypt)
+#   Es werden KEINE Ports publiziert außer 80/443 am Caddy.
+# ============================================================================
+name: v4smart
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+networks:
+  backend:
+    internal: true
+  edge: {}
+
+volumes:
+  redpanda-data:
+  questdb-data:
+  caddy-data:
+  caddy-config:
+
+services:
+  # ========================= INFRASTRUKTUR =========================
+  redpanda:
+    <<: *common
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    networks: [backend]
+    cpus: 2
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+
+  # Einmal-Job: legt alle Topics an (idempotent) und beendet sich.
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    restart: "no"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["bash", "/init/create_topics.sh"]
+    volumes:
+      - ./scripts/create_topics.sh:/init/create_topics.sh:ro
+    networks: [backend]
+
+  questdb:
+    <<: *common
+    image: questdb/questdb:8.1.1
+    environment:
+      QDB_TELEMETRY_ENABLED: "false"
+      QDB_SHARED_WORKER_COUNT: "2"
+      QDB_PG_ENABLED: "false"        # PG-Wire aus; HTTP (9000) + ILP (9009) reichen
+    volumes:
+      - questdb-data:/var/lib/questdb
+    networks: [backend]
+    cpus: 2
+    mem_limit: 2g
+    healthcheck:
+      # TCP-Probe auf den HTTP-Port (Image ist Ubuntu-basiert, bash vorhanden).
+      # Falls das Image mal kein bash hat: auf 'service_started' ausweichen.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # Redpanda Console — Blick in Topics/Consumer-Groups (via console.<domain>)
+  console:
+    <<: *common
+    image: docker.redpanda.com/redpandadata/console:v2.7.2
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks: [backend]
+    mem_limit: 256m
+
+  # ========================= APP-SERVICES =========================
+  # Kontrakt für alle drei Backend-Services (siehe CLAUDE.md §15):
+  # Das Image MUSS ein Executable `selfcheck` im PATH enthalten (Exit 0 = ok).
+
+  factory-simulator:
+    <<: *common
+    profiles: [app]
+    build:
+      context: ./services/factory-simulator
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      MACHINE_COUNT: ${MACHINE_COUNT:-8}
+      TOTAL_RATE: ${TOTAL_RATE:-2000}
+      FACTORY_AUTO_START: ${FACTORY_AUTO_START:-true}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    networks: [backend]
+    cpus: 1
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "selfcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  middleware-core:
+    <<: *common
+    profiles: [app]
+    build:
+      context: ./services/middleware-core
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      QUESTDB_ILP_ADDR: questdb:9009
+      QUESTDB_HTTP: http://questdb:9000
+      MACHINE_COUNT: ${MACHINE_COUNT:-8}
+      DOWNSAMPLE_HZ: ${DOWNSAMPLE_HZ:-10}
+      WS_TELEMETRY_HZ: ${WS_TELEMETRY_HZ:-5}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      questdb:
+        condition: service_started   # bewusst nicht "healthy": Core hat eigenen Reconnect
+    networks: [backend]
+    cpus: 2
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "selfcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  predictive-ml:
+    <<: *common
+    profiles: [app]
+    build:
+      context: ./services/predictive-ml
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      MACHINE_COUNT: ${MACHINE_COUNT:-8}
+      ML_WARMUP_S: ${ML_WARMUP_S:-60}
+      ML_COOLDOWN_S: ${ML_COOLDOWN_S:-45}
+      ML_VIB_GUARD: ${ML_VIB_GUARD:-4.5}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    networks: [backend]
+    cpus: 1.5
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "selfcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  dashboard-ui:
+    <<: *common
+    profiles: [app]
+    build:
+      context: ./services/dashboard-ui
+    networks: [backend]
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ========================= EDGE (öffentliche URL) =========================
+  caddy:
+    <<: *common
+    profiles: [edge]
+    image: caddy:2.8-alpine
+    ports:
+      # bindet an die INNERE Engine (dind); der Host mappt 80/443 darauf
+      - "80:80"
+      - "443:443"
+    environment:
+      TWIN_HOST: ${TWIN_HOST:-}
+      CONSOLE_HOST: ${CONSOLE_HOST:-}
+      QUESTDB_HOST: ${QUESTDB_HOST:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data          # Zertifikate — bleiben über Neustarts erhalten
+      - caddy-config:/config
+    networks: [edge, backend]
+    mem_limit: 256m

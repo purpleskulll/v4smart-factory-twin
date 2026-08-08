@@ -1,0 +1,63 @@
+# ============================================================================
+# V4Smart — edge / public URLs (Caddy 2.8)
+# ----------------------------------------------------------------------------
+# Three hostnames (DNS A-records pointing at this host; a wildcard works too):
+#   TWIN_HOST     -> dashboard (React UI) + /api + /ws (middleware-core)
+#   CONSOLE_HOST  -> Redpanda Console (topics, consumer groups)
+#   QUESTDB_HOST  -> QuestDB web console (SQL on the historian)
+#
+# Everything sits behind basic auth. Generate the hash with:
+#   make hash-password pw='YOUR_PASSWORD'
+# Caddy obtains TLS certificates from Let's Encrypt automatically (needs ports
+# 80 and 443 reachable from the internet).
+#
+# RUNNING BEHIND AN EXISTING REVERSE PROXY
+# If ports 80/443 are already taken, publish the edge on other ports (see
+# docker-compose.yml) and let your existing proxy terminate TLS. In that case
+# prefix each site address below with `http://` — otherwise this Caddy answers
+# the upstream proxy with a 308 redirect to https and the two proxies loop.
+# ============================================================================
+
+{
+	email {$ACME_EMAIL}
+	# While DNS or ports are still in flux, test against the staging CA first
+	# (avoids Let's Encrypt rate limits): uncomment, test, comment out again,
+	# then: docker compose --profile edge restart caddy
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+(auth) {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+}
+
+{$TWIN_HOST} {
+	import auth
+	encode zstd gzip
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy middleware-core:8080
+	}
+
+	# WebSocket live stream (Caddy handles the upgrade automatically)
+	@ws path /ws
+	handle @ws {
+		reverse_proxy middleware-core:8080
+	}
+
+	handle {
+		reverse_proxy dashboard-ui:80
+	}
+}
+
+{$CONSOLE_HOST} {
+	import auth
+	reverse_proxy console:8080
+}
+
+{$QUESTDB_HOST} {
+	import auth
+	reverse_proxy questdb:9000
+}

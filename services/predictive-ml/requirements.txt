@@ -1,0 +1,6 @@
+# Versionen nach CLAUDE.md §5. flatbuffers ist EXAKT gepinnt — die Runtime muss
+# zur flatc-Version passen, sonst gibt es kryptische Decode-Fehler (§99).
+confluent-kafka>=2.5
+scikit-learn>=1.5
+numpy>=2
+flatbuffers==24.3.25

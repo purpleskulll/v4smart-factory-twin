@@ -1,0 +1,32 @@
+// ============================================================================
+// V4Smart — Hot-Path-Payload für sensor_raw und sensor_clean
+// ----------------------------------------------------------------------------
+// FlatBuffers: Zero-Parsing / direkter Memory-Access (Hard Rule aus dem
+// Datasheet — KEIN JSON auf dem High-Frequency-Datenstrom).
+//
+// Codegen für Go, Rust und Python:  make codegen   (flatc v24.3.25, gepinnt)
+// Kafka-Key: ASCII-Dezimal der machine_id (Partition-Affinität pro Maschine).
+// ============================================================================
+
+namespace telemetry;
+
+enum MachineStatus : byte {
+  OK        = 0,
+  THROTTLED = 1,   // Self-Healing aktiv (Speed gedrosselt)
+  ERROR     = 2,   // Temperatur >= 85 °C erreicht — Maschine steht
+  OFFLINE   = 3    // Fabrik gestoppt (1-Hz-Heartbeat statt Volllast)
+}
+
+table SensorReading {
+  ts_ns:         int64;          // Unix-Epoch in Nanosekunden (Producer-Uhr)
+  machine_id:    uint16;         // 1..MACHINE_COUNT
+  seq:           uint64;         // monoton steigende Sequenz pro Maschine
+  temperature_c: float32;        // °C
+  pressure_bar:  float32;        // bar
+  vibration_mms: float32;        // mm/s RMS
+  speed_factor:  float32;        // 1.0 = Volllast, 0.5 = gedrosselt, 0.0 = steht
+  status:        MachineStatus;
+}
+
+root_type SensorReading;
+file_identifier "SNR1";
