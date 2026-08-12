@@ -117,6 +117,52 @@ def test_model_detects_before_the_guard_would():
     raise AssertionError("Rampe wurde nicht erkannt")
 
 
+def test_warmup_waits_out_a_stopped_factory():
+    """Der Warmup darf nicht ablaufen, während die Fabrik steht.
+
+    Live aufgetreten: der ML-Service startete neu, während die Fabrik gestoppt
+    war. Der Warmup lief nach 60 s Wanduhrzeit trotzdem ab und kalibrierte auf
+    26 statt gut 200 Fenstern — die daraus entstandene Schwelle (-0.067 statt
+    -0.127) liegt laut tools/calibrate.py bei ~3 Fehlalarmen je 10 Minuten.
+    """
+    engine = Engine(CFG)
+    engine.set_factory_running(False)
+    factory = Factory.build(count=8, seed=42)
+
+    # Stillstand: Heartbeat-Rate, Maschinen melden OFFLINE.
+    for mid, ts, temp, press, vib in factory.run(CFG.warmup_s * 3, hz=1.0):
+        engine.add_sample(mid, ts, temp, press, vib, "OFFLINE")
+    assert not engine.warmup_done, "Warmup lief trotz stehender Fabrik ab"
+
+    # Fabrik startet: jetzt zählt die Zeit und es kommen echte Fenster.
+    engine.set_factory_running(True)
+    feed(engine, factory, CFG.warmup_s + 15)
+    assert engine.warmup_done, "Warmup wurde nach dem Start nicht abgeschlossen"
+    assert engine.model.warmup_windows >= engine.min_warmup_windows, (
+        f"nur {engine.model.warmup_windows} Fenster, "
+        f"Mindestmaß ist {engine.min_warmup_windows}"
+    )
+
+
+def test_warmup_needs_enough_windows_not_just_time():
+    """Genug Zeit allein reicht nicht — die Datenbasis muss auch tragen."""
+    engine = Engine(CFG)
+    factory = Factory.build(count=1, seed=42)
+
+    # Eine einzige Maschine liefert in warmup_s deutlich zu wenige Fenster.
+    for mid, ts, temp, press, vib in factory.run(CFG.warmup_s + 5):
+        engine.add_sample(mid, ts, temp, press, vib, "OK")
+    assert not engine.warmup_done, (
+        f"trainiert mit nur {engine.model.warmup_windows} Fenstern "
+        f"(Mindestmaß {engine.min_warmup_windows})"
+    )
+
+    # Mit genug Laufzeit kommt die Datenbasis zusammen.
+    for mid, ts, temp, press, vib in factory.run(300):
+        engine.add_sample(mid, ts, temp, press, vib, "OK")
+    assert engine.warmup_done
+
+
 def test_guard_fires_even_without_trained_model():
     """Deterministisches Sicherheitsnetz: die Kette darf nie am Modell scheitern."""
     engine = Engine(CFG)

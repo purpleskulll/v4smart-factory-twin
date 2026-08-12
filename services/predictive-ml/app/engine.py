@@ -67,6 +67,9 @@ class Engine:
         self._machines: Dict[int, MachineState] = {}
         self._start_ts: Optional[float] = None
         self._warmup_done = False
+        # Der Warmup zählt nur PRODUKTIVE Zeit (siehe _advance_warmup_clock).
+        self._warmup_elapsed = 0.0
+        self._last_ts: Optional[float] = None
 
     # ---------------------------------------------------------------- Zustand
     def set_factory_running(self, running: bool) -> None:
@@ -75,6 +78,30 @@ class Engine:
     @property
     def warmup_done(self) -> bool:
         return self._warmup_done
+
+    @property
+    def min_warmup_windows(self) -> int:
+        """Mindestzahl an Fenstern vor dem Training.
+
+        Bei laufender Fabrik liefern MACHINE_COUNT Maschinen alle `step_s` je ein
+        Fenster — in `warmup_s` Sekunden also reichlich. Diese Untergrenze greift
+        nur, wenn zu wenige zusammenkommen, und verhindert genau den Fall, der
+        live auftrat: der Warmup lief während eines Fabrik-Stopps ab und
+        kalibrierte auf 26 statt 201 Fenstern. Die daraus entstandene Schwelle
+        (-0.067 statt -0.127) liegt laut tools/calibrate.py bei rund 3
+        Fehlalarmen je 10 Minuten.
+        """
+        return max(40, self.cfg.machine_count * 10)
+
+    def _advance_warmup_clock(self, ts_s: float) -> None:
+        """Zählt nur Zeit, in der die Fabrik tatsächlich produziert."""
+        if self._last_ts is None:
+            self._last_ts = ts_s
+            return
+        if ts_s > self._last_ts:
+            if self.factory_running:
+                self._warmup_elapsed += ts_s - self._last_ts
+            self._last_ts = ts_s
 
     def _state(self, machine_id: int) -> MachineState:
         if machine_id not in self._machines:
@@ -89,6 +116,7 @@ class Engine:
     ) -> Decision:
         if self._start_ts is None:
             self._start_ts = ts_s
+        self._advance_warmup_clock(ts_s)
 
         st = self._state(machine_id)
         decision = Decision()
@@ -106,7 +134,12 @@ class Engine:
         if not self._warmup_done:
             if status == "OK":
                 self.model.observe(window.vector)
-            if ts_s - self._start_ts >= self.cfg.warmup_s:
+            # Beide Bedingungen: genug produktive Zeit UND genug Fenster. Fehlt
+            # eines, sammelt der Warmup weiter, statt auf dünner Datenbasis zu
+            # kalibrieren.
+            enough_time = self._warmup_elapsed >= self.cfg.warmup_s
+            enough_data = self.model.warmup_windows >= self.min_warmup_windows
+            if enough_time and enough_data:
                 if self.model.train():
                     self._warmup_done = True
                     decision.events.append(

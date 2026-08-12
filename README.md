@@ -264,6 +264,12 @@ they generalise:
   threshold fell below the score range the Isolation Forest can produce, so
   detection quietly degraded to the deterministic guard alone — everything still
   "passed", just 8 seconds later and without any prediction.
+- **The warmup calibrated on almost nothing.** It ended after a fixed 60 seconds
+  of wall-clock time regardless of what arrived. When the service restarted while
+  the factory happened to be stopped, it trained on 26 windows instead of ~200
+  and produced a threshold worth roughly three false alarms per ten minutes —
+  latent, and only visible once the factory ran again. The warmup now counts
+  productive time only and additionally requires a minimum number of windows.
 
 ## Licence
 
