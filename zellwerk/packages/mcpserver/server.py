@@ -15,11 +15,18 @@ from __future__ import annotations
 
 import sys
 
-from mcp.server.fastmcp import FastMCP
+# Klassenname und Modulpfad sind gegen das installierte SDK geprüft:
+# `mcp.server.fastmcp` existiert dort NICHT mehr, die Klasse heißt MCPServer.
+from mcp.server.mcpserver import MCPServer
 
 from . import tools
 
-mcp = FastMCP("zellwerk")
+mcp = MCPServer("zellwerk", instructions=(
+    "Werkzeuge für eine Lithium-Ionen-Zellfertigung. Der Materialfluss geht "
+    "mixer01 → coater01 → calender01 → assembly01 → filling01 → formation01; "
+    "ein Fehler an einer frühen Station wird oft erst an einer späten sichtbar, "
+    "weshalb trace_cell_genealogy meist das entscheidende Werkzeug ist."
+))
 
 
 @mcp.tool()
@@ -155,10 +162,9 @@ async def export_battery_pass(serial: str) -> dict:
 
 def main() -> None:
     if "--http" in sys.argv:
-        # Für Dienste im Compose-Netz (z. B. die Playbooks).
-        mcp.settings.host = "0.0.0.0"
-        mcp.settings.port = 8765
-        mcp.run(transport="sse")
+        # Für Dienste im Compose-Netz. Host und Port gehen als kwargs direkt an
+        # run() — ein `settings`-Objekt gibt es in diesem SDK nicht.
+        mcp.run(transport="sse", host="0.0.0.0", port=8765)
     else:
         # Für Claude Desktop / Claude Code.
         mcp.run(transport="stdio")

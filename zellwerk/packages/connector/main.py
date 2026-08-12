@@ -134,15 +134,29 @@ class StationBridge:
                     # read_data_value statt read_value: nur so kommt der
                     # StatusCode mit, aus dem sich die Qualität ergibt.
                     datenwert = await node.read_data_value()
+                    wert = datenwert.Value.Value
+                    qualitaet = quality_of(datenwert.StatusCode)
+                except ua.uaerrors.UaStatusCodeError as exc:
+                    # WICHTIG: asyncua wirft bei einem Bad-StatusCode eine
+                    # Exception. Das ist aber KEIN Lesefehler — es ist die
+                    # Aussage der Anlage "dieser Kanal liefert nichts". Genau
+                    # diese Information macht einen Kanalausfall überhaupt
+                    # erkennbar; würde sie hier verschluckt, verstummte der
+                    # Kanal nur stillschweigend und wäre von einer echten
+                    # Störung nicht mehr zu unterscheiden.
+                    wert = None
+                    qualitaet = quality_of(ua.StatusCode(exc.code))
                 except Exception as exc:  # noqa: BLE001
+                    # Alles andere ist ein echter Lesefehler: überspringen und
+                    # zählen, damit unten der Reconnect greifen kann.
                     fehler += 1
                     log.warning("Lesefehler %s.%s: %s", self.cfg.station, name, exc)
                     continue
 
                 payload = {
                     "ts": datetime.now(UTC).isoformat(),
-                    "value": datenwert.Value.Value,
-                    "quality": quality_of(datenwert.StatusCode),
+                    "value": wert,
+                    "quality": qualitaet,
                     "unit": "",
                 }
                 await mqtt.publish(topic_for(self.cfg, name), json.dumps(payload).encode())
