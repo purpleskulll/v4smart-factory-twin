@@ -1,0 +1,50 @@
+# Akzeptanzfragen für Playbook 10.3 (SPEC §10.3).
+#
+# `muss_enthalten` prüft auf Zeichenketten in der Antwort. Bewusst grob gehalten:
+# geprüft wird, ob der Agent die richtige ENTITÄT gefunden hat, nicht ob er eine
+# bestimmte Formulierung trifft. Eine Prüfung auf exakten Wortlaut würde nur
+# messen, wie gut wir raten, wie ein Sprachmodell formuliert.
+#
+# Ausgeführt mit:  python -m agents.runner testfragen
+# Voraussetzung: Der Stack läuft und hat Daten (mindestens ~30 Simulationsminuten).
+
+fragen:
+  - frage: "Wie viele Zellen sind aktuell in Quarantäne, und warum?"
+    muss_enthalten: ["quarantäne"]
+    prueft: "Statusabfrage + Begründung aus dem Grade"
+
+  - frage: "Welche Zellen sind Ausschuss, und was war der häufigste Grund?"
+    muss_enthalten: ["ausschuss"]
+    prueft: "Gruppierung nach Fehlerbild"
+
+  - frage: "Aus welcher Slurry-Charge stammt die zuletzt gefertigte Zelle?"
+    muss_enthalten: ["slurry"]
+    prueft: "Genealogie rückwärts bis zur Wurzel"
+
+  - frage: "Welche Stationen liegen aktuell außerhalb ihres Prozessfensters?"
+    muss_enthalten: []
+    prueft: "Prozessfenster-Vergleich über mehrere Stationen"
+
+  - frage: "Wie viele Zellen sind insgesamt gefertigt worden und wie verteilen sie sich auf die Status?"
+    muss_enthalten: []
+    prueft: "Überblick + Aggregation"
+
+  - frage: "Liegt die Viskosität im Mischer im Sollbereich? Zeige den Verlauf der letzten Stunde."
+    muss_enthalten: ["viskosität"]
+    prueft: "Zeitreihe + Sollfenster"
+
+  - frage: "Gibt es offene Alarme? Wenn ja, welche und seit wann?"
+    muss_enthalten: []
+    prueft: "Alarmabfrage mit Zeitbezug"
+
+  - frage: "Welche Formierkanäle liefern gerade keine gültigen Messwerte?"
+    muss_enthalten: []
+    prueft: "Qualitätsauswertung je Kanal — Grundlage der F3/F5-Unterscheidung"
+
+  - frage: "Wie hoch ist die durchschnittliche Porosität nach dem Kalandrieren, und liegt sie im Soll?"
+    muss_enthalten: ["porosität"]
+    prueft: "Kennzahl + Sollvergleich"
+
+  - frage: "Welche Zellen wurden auf Formierkanal 3 formiert?"
+    muss_enthalten: []
+    prueft: "Suche über ein Zellmerkmal statt über die Genealogie"

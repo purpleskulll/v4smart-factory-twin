@@ -1,0 +1,50 @@
+[project]
+name = "zellwerk"
+version = "0.1.0"
+description = "Digitale Musterfabrik + KI-native Middleware für die Batterieproduktion"
+requires-python = ">=3.12"
+
+dependencies = [
+    # OPC UA: Server (Musterfabrik) und Client (Konnektor) aus einer Bibliothek
+    "asyncua>=1.1.5",
+    # MQTT-Client für Konnektor und Ingest
+    "aiomqtt>=2.3.0",
+    # Postgres/TimescaleDB
+    "asyncpg>=0.30.0",
+    # Mock-ERP und die REST-Schnittstelle der Fault-Injection
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "httpx>=0.28.0",
+    # Konfiguration
+    "pyyaml>=6.0.2",
+    # MCP-Server (§9)
+    "mcp>=1.1.0",
+    # Agenten (§10) — spricht gegen zellwerk-llm, nicht gegen die Claude-API
+    # (docs/decisions.md D1)
+    "anthropic>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Integrationstests brauchen den laufenden Stack und werden separat angestoßen.
+markers = ["integration: braucht laufenden docker-compose-Stack"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true

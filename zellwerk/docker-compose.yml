@@ -1,0 +1,252 @@
+# =============================================================================
+# zellwerk — Digitale Musterfabrik + KI-native Middleware (SPEC.md §3)
+# -----------------------------------------------------------------------------
+# Profile:
+#   sim    Musterfabrik: 6 OPC-UA-Stationen + Mock-ERP
+#   core   UNS (EMQX), TimescaleDB, Konnektor, Ingest
+#   obs    Grafana
+#   ai     zellwerk-llm (LLM-Zugang) + MCP-Server + Agenten
+#
+#   make up      → sim + core + obs (die Fabrik läuft und wird sichtbar)
+#   make up-ai   → zusätzlich die KI-Schicht
+#
+# Netzentwurf (docs/decisions.md D3):
+#   backend  internal: true — KEIN Internet. Hier hängt alles.
+#   egress   normal        — hier hängt AUSSCHLIESSLICH zellwerk-llm.
+# Damit gibt es genau einen kontrollierten Weg nach draußen, und der führt zu
+# api.anthropic.com. Kein anderer Dienst kann versehentlich telefonieren.
+# =============================================================================
+name: zellwerk
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-python: &python
+  <<: *common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &pyenv
+    ZW_MQTT_HOST: emqx
+    ZW_MQTT_PORT: "1883"
+    ZW_DB_DSN: postgresql://zellwerk:${ZW_DB_PASSWORD:-zellwerk}@timescaledb:5432/zellwerk
+    ZW_SITE: ${ZW_SITE:-werk1}
+    # Takt und Zeitraffer MÜSSEN hier stehen: ohne Eintrag erreicht ein
+    # `ZW_SPEED=30 docker compose up` den Container nicht, und die Fabrik läuft
+    # weiter in Echtzeit — ohne jede Fehlermeldung.
+    ZW_TICK_S: ${ZW_TICK_S:-1.0}
+    ZW_SPEED: ${ZW_SPEED:-1.0}
+    PYTHONUNBUFFERED: "1"
+
+networks:
+  backend:
+    internal: true
+  egress: {}
+
+volumes:
+  timescale-data:
+  emqx-data:
+  grafana-data:
+
+services:
+
+  # ---------------------------------------------------------------- UNS -----
+  # Broker und Datenbank tragen BEWUSST kein Profil: sie sind Infrastruktur, von
+  # der mehrere Profile abhängen. Lagen sie in `core`, brach `--profile sim`
+  # allein mit "depends on undefined service emqx" ab — eine Abhängigkeit über
+  # eine Profilgrenze hinweg ist in Compose kein gültiges Projekt.
+  emqx:
+    <<: *common
+    image: emqx:5.8
+    container_name: zellwerk-emqx
+    networks: [backend]
+    environment:
+      EMQX_NODE__COOKIE: zellwerk
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${ZW_EMQX_PASSWORD:-zellwerk-demo}
+    volumes:
+      - emqx-data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ------------------------------------------------------------ Datenbank ---
+  timescaledb:
+    <<: *common
+    image: timescale/timescaledb-ha:pg16
+    container_name: zellwerk-timescaledb
+    networks: [backend]
+    environment:
+      POSTGRES_DB: zellwerk
+      POSTGRES_USER: zellwerk
+      POSTGRES_PASSWORD: ${ZW_DB_PASSWORD:-zellwerk}
+    volumes:
+      - timescale-data:/home/postgres/pgdata
+      - ./packages/core/ingest/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zellwerk -d zellwerk"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # --------------------------------------------------------- Musterfabrik ---
+  # Alle sechs Stationen laufen in EINEM Container, jede als eigener
+  # OPC-UA-Server auf eigenem Port (4841–4846) — ein Prozess je Station wäre
+  # sechs fast identische Container für nichts.
+  simfactory:
+    <<: *python
+    container_name: zellwerk-simfactory
+    profiles: ["sim"]
+    networks: [backend]
+    command: ["python", "-m", "simfactory.main"]
+    environment:
+      <<: *pyenv
+      ZW_ERP_URL: http://erp-mock:8000
+    ports: []
+    depends_on:
+      emqx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "simfactory.selfcheck"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  erp-mock:
+    <<: *python
+    container_name: zellwerk-erp-mock
+    profiles: ["sim"]
+    networks: [backend]
+    command: ["uvicorn", "simfactory.erp_mock.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 15s
+
+  # ------------------------------------------------------------ Konnektor ---
+  connector:
+    <<: *python
+    container_name: zellwerk-connector
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "connector.main"]
+    volumes:
+      - ./packages/connector/config.yaml:/app/connector-config.yaml:ro
+    environment:
+      <<: *pyenv
+      ZW_CONNECTOR_CONFIG: /app/connector-config.yaml
+    depends_on:
+      emqx:
+        condition: service_healthy
+
+  # --------------------------------------------------------------- Ingest ---
+  ingest:
+    <<: *python
+    container_name: zellwerk-ingest
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "core.ingest.main"]
+    depends_on:
+      emqx:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  # ------------------------------------------------------------ Edge-Rules --
+  # Der deterministische <1s-Pfad (SPEC §8.3). Läuft bewusst als eigener Dienst
+  # neben dem Ingest: der Regelpfad darf nicht warten, bis ein Datenbankschreiber
+  # fertig ist.
+  rules:
+    <<: *python
+    container_name: zellwerk-rules
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "core.rules.main"]
+    volumes:
+      - ./packages/core/rules/rules.yaml:/app/core/rules/rules.yaml:ro
+    depends_on:
+      emqx:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  # ----------------------------------------------------------- Sichtbarkeit -
+  grafana:
+    <<: *common
+    image: grafana/grafana-oss:11.3.0
+    container_name: zellwerk-grafana
+    profiles: ["obs"]
+    networks: [backend]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${ZW_GRAFANA_PASSWORD:-zellwerk-demo}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./dashboards/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards/json:/var/lib/grafana/dashboards:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # -------------------------------------------------------------- KI-Schicht
+  # MCP-Server: stellt das Fabrikmodell als Werkzeuge bereit (SPEC §9).
+  # Läuft im SSE-Modus, damit Dienste im Compose-Netz ihn erreichen; für Claude
+  # Desktop/Code lässt sich dasselbe Modul über stdio starten.
+  mcpserver:
+    <<: *python
+    container_name: zellwerk-mcp
+    profiles: ["ai"]
+    networks: [backend]
+    command: ["python", "-m", "mcpserver.server", "--http"]
+    environment:
+      <<: *pyenv
+      ZW_LIVE_ACTIONS: ${ZW_LIVE_ACTIONS:-false}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # Die Agenten laufen nicht als Dauerdienst: ein Playbook wird angestoßen,
+  # arbeitet und ist fertig. Der Container hält sich nur bereit, damit
+  # `docker compose exec agents python -m agents.runner ...` sofort läuft.
+  agents:
+    <<: *python
+    container_name: zellwerk-agents
+    profiles: ["ai"]
+    networks: [backend]
+    command: ["sleep", "infinity"]
+    environment:
+      <<: *pyenv
+      ZW_LLM_BASE_URL: ${ZW_LLM_BASE_URL:-http://zellwerk-llm:4010}
+      ZW_MODEL: ${ZW_MODEL:-claude-haiku-4-5-20251001}
+      ZW_LIVE_ACTIONS: ${ZW_LIVE_ACTIONS:-false}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # Der EINZIGE Dienst mit einem Bein im egress-Netz. Siehe decisions.md D1/D3.
+  zellwerk-llm:
+    <<: *common
+    build:
+      context: ./services/zellwerk-llm
+    container_name: zellwerk-llm
+    profiles: ["ai"]
+    networks: [backend, egress]
+    environment:
+      ZELLWERK_MODEL: ${ZW_MODEL:-claude-haiku-4-5-20251001}
+    # Der Token liegt ausschließlich im RAM. Nach einem Neustart ist er weg;
+    # zellwerk-creds-sync (systemd-Timer auf dem Host, alle 5 min) legt ihn neu
+    # ab. Bis dahin meldet /health ehrlich rot statt still zu scheitern.
+    tmpfs:
+      - /creds

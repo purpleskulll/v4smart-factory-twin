@@ -1,0 +1,54 @@
+# Konnektor-Konfiguration (SPEC §8.1)
+#
+# Diese Datei ist die einzige Stelle, an der steht, WELCHE Maschinen angebunden
+# sind. Der Konnektor-Code selbst weiß nichts über Batteriefertigung — im echten
+# Einsatz zeigen die Endpunkte auf reale Steuerungen, und nichts anderes ändert
+# sich. Genau das ist das Produktversprechen.
+#
+# `nodes: []` bedeutet: alle Variablen der Station abonnieren.
+
+stations:
+  - station: mixer01
+    endpoint: opc.tcp://simfactory:4841/zellwerk/mixer01
+    area: elektrode
+    line: linie1
+    poll_s: 1.0
+    nodes: [viskositaet_pas, feststoffanteil_pct, mixer_temp_c, mischdauer_min]
+
+  - station: coater01
+    endpoint: opc.tcp://simfactory:4842/zellwerk/coater01
+    area: elektrode
+    line: linie1
+    poll_s: 1.0
+    nodes: [nassschichtdicke_um, schichtdicke_sigma_um, bahngeschwindigkeit_m_min,
+            trocknertemp_c, flaechengewicht_g_m2, haftungsindex]
+
+  - station: calender01
+    endpoint: opc.tcp://simfactory:4843/zellwerk/calender01
+    area: elektrode
+    line: linie1
+    poll_s: 1.0
+    nodes: [liniendruck_n_mm, spaltmass_um, porositaet_pct]
+
+  - station: assembly01
+    endpoint: opc.tcp://simfactory:4844/zellwerk/assembly01
+    area: zelle
+    line: linie1
+    poll_s: 1.0
+    nodes: [ausrichtungsfehler_um, zugspannung_n, takt_zellen_h, delaminationen_gesamt]
+
+  - station: filling01
+    endpoint: opc.tcp://simfactory:4845/zellwerk/filling01
+    area: zelle
+    line: linie1
+    poll_s: 1.0
+    nodes: [dosiermenge_g, vakuumdruck_mbar, dichtheitspruefung]
+
+  # Formierung: Takt 10 s (SPEC §7.1). Alle Kanalvariablen werden abonniert —
+  # die Edge-Rule für die Übertemperatur (§8.3) braucht jeden Kanal einzeln.
+  - station: formation01
+    endpoint: opc.tcp://simfactory:4846/zellwerk/formation01
+    area: zelle
+    line: linie1
+    poll_s: 1.0
+    nodes: []

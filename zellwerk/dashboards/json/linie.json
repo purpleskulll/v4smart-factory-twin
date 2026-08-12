@@ -1,0 +1,300 @@
+{
+  "uid": "zellwerk-linie",
+  "title": "zellwerk — Linienübersicht",
+  "tags": [
+    "zellwerk"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Mischer — Viskosität (Soll 2–6 Pa·s)",
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, value, name AS metric FROM measurement WHERE asset_id = 'mixer01' AND name = 'viskositaet_pas' AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1.5,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 2.0
+              },
+              {
+                "color": "red",
+                "value": 6.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Coater — Streuung der Schichtdicke",
+      "id": 2,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, value, name AS metric FROM measurement WHERE asset_id = 'coater01' AND name = 'schichtdicke_sigma_um' AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1.5,
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Kalander — Porosität (Soll 28–38 %)",
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, value, name AS metric FROM measurement WHERE asset_id = 'calender01' AND name = 'porositaet_pct' AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1.5,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 28.0
+              },
+              {
+                "color": "red",
+                "value": 38.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Befüllung — Dosiermenge (Soll 5 g ±1,5 %)",
+      "id": 4,
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, value, name AS metric FROM measurement WHERE asset_id = 'filling01' AND name = 'dosiermenge_g' AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1.5,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 4.925
+              },
+              {
+                "color": "red",
+                "value": 5.075
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Formierung — Kanaltemperaturen (F3 zeigt sich hier)",
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, value, name AS metric FROM measurement WHERE asset_id = 'formation01' AND name LIKE 'ch%_temp_c' AND quality = 'good' AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1.5,
+            "fillOpacity": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 50.0
+              }
+            ]
+          },
+          "unit": "celsius"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Zellen nach Status",
+      "id": 6,
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT status, count(*) AS anzahl FROM cell GROUP BY status ORDER BY status"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Offene Ereignisse",
+      "id": 7,
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts, asset_id, severity, code FROM event WHERE acked = false ORDER BY ts DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}

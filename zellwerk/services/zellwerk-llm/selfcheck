@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Healthcheck: gruen nur, wenn ein GUELTIGER Token vorliegt.
+
+Absichtlich streng — ein Proxy mit abgelaufenem Token ist erreichbar, aber
+nutzlos. Wenn er trotzdem "healthy" meldet, faellt der Ausfall erst beim
+ersten Agentenlauf auf. Lieber hier rot werden.
+"""
+
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:4010/health", timeout=4) as response:
+        payload = json.loads(response.read())
+except Exception as exc:  # noqa: BLE001 — jeder Fehler ist hier ein roter Check
+    print(f"selfcheck: /health nicht erreichbar: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+if not payload.get("ok"):
+    print(f"selfcheck: kein gueltiger Token — {payload.get('error')}", file=sys.stderr)
+    sys.exit(1)
+
+print(f"selfcheck: ok, Token gueltig noch {payload.get('seconds_left')}s")
+sys.exit(0)

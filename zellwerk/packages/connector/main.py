@@ -1,0 +1,175 @@
+"""Konnektor: OPC UA → Unified Namespace (SPEC §8.1).
+
+Bewusst generisch: WAS abonniert und WOHIN publiziert wird, steht vollständig in
+`config.yaml`. Im echten Einsatz zeigt dieselbe Datei auf echte Maschinen statt
+auf den Simulator — genau das ist das Kernversprechen des Produkts. Deshalb gibt
+es hier keine einzige Zeile, die etwas über Batteriefertigung weiß.
+
+Verbindungsabbrüche werden mit Backoff neu aufgebaut. Ein Konnektor, der nach
+einem Maschinen-Neustart still stehenbleibt, wäre im Feld wertlos.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+import aiomqtt
+import yaml
+from asyncua import Client, ua
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+log = logging.getLogger("connector")
+
+CONFIG_PATH = os.environ.get("ZW_CONNECTOR_CONFIG", "/app/connector-config.yaml")
+MQTT_HOST = os.environ.get("ZW_MQTT_HOST", "emqx")
+MQTT_PORT = int(os.environ.get("ZW_MQTT_PORT", "1883"))
+SITE = os.environ.get("ZW_SITE", "werk1")
+
+
+@dataclass
+class StationConfig:
+    station: str
+    endpoint: str
+    area: str
+    line: str
+    poll_s: float
+    nodes: list[str]
+
+
+def load_config(path: str) -> list[StationConfig]:
+    with open(path, encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    return [
+        StationConfig(
+            station=entry["station"], endpoint=entry["endpoint"],
+            area=entry.get("area", "unbekannt"), line=entry.get("line", "linie1"),
+            poll_s=float(entry.get("poll_s", 1.0)), nodes=list(entry.get("nodes", [])),
+        )
+        for entry in raw.get("stations", [])
+    ]
+
+
+def topic_for(cfg: StationConfig, name: str) -> str:
+    """Topic-Baum aus SPEC §6.1."""
+    return f"zellwerk/v1/{SITE}/{cfg.area}/{cfg.line}/{cfg.station}/pv/{name}"
+
+
+def quality_of(status) -> str:
+    """OPC-UA-StatusCode → UNS-Qualität (SPEC §6.1).
+
+    Der Simulator bildet einen Kanalausfall (F5) als StatusCode `Bad` ab; diese
+    Information MUSS erhalten bleiben, sonst kann Playbook 10.2 F5 nicht von F3
+    unterscheiden.
+    """
+    if status is None:
+        return "uncertain"
+    try:
+        if status.is_good():
+            return "good"
+    except AttributeError:
+        return "uncertain"
+    # `name` ist z. B. "Bad", "BadOutOfService", "Uncertain..."
+    bezeichnung = getattr(status, "name", "") or str(status)
+    return "uncertain" if "Uncertain" in bezeichnung else "bad"
+
+
+class StationBridge:
+    def __init__(self, cfg: StationConfig) -> None:
+        self.cfg = cfg
+        self.nodes: dict[str, ua.Node] = {}
+
+    async def run(self, mqtt: aiomqtt.Client) -> None:
+        backoff = 1.0
+        while True:
+            try:
+                async with Client(url=self.cfg.endpoint) as client:
+                    await self._discover(client)
+                    log.info("%s verbunden: %d Knoten", self.cfg.station, len(self.nodes))
+                    backoff = 1.0
+                    await self._poll_loop(client, mqtt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s getrennt (%s) — neuer Versuch in %.0fs",
+                            self.cfg.station, exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    async def _discover(self, client: Client) -> None:
+        """Findet die Variablen der Station im Objektbaum."""
+        self.nodes.clear()
+        objects = client.nodes.objects
+        for child in await objects.get_children():
+            name = (await child.read_browse_name()).Name
+            if name != self.cfg.station:
+                continue
+            for var in await child.get_children():
+                var_name = (await var.read_browse_name()).Name
+                # Leere Knotenliste = alles abonnieren.
+                if not self.cfg.nodes or var_name in self.cfg.nodes:
+                    self.nodes[var_name] = var
+
+    async def _poll_loop(self, client: Client, mqtt: aiomqtt.Client) -> None:
+        """Liest die Knoten im Takt und publiziert sie.
+
+        Zwei Dinge, die hier aus einem konkreten Ausfall gelernt sind:
+
+        * Ein nicht lesbarer Knoten wird ÜBERSPRUNGEN, nicht als `null`
+          publiziert. Vorher schrieb ein toter Konnektor stundenlang leere
+          Werte in die Datenbank — der Ingest war grün, die Regeln feuerten
+          nie, und niemand sah einen Fehler.
+        * Antwortet die ganze Station nicht mehr, fliegt eine Exception nach
+          oben, damit `run()` die Verbindung neu aufbaut. Fängt man hier alles
+          ab, wird der Reconnect nie erreicht.
+        """
+        while True:
+            fehler = 0
+            for name, node in self.nodes.items():
+                try:
+                    # read_data_value statt read_value: nur so kommt der
+                    # StatusCode mit, aus dem sich die Qualität ergibt.
+                    datenwert = await node.read_data_value()
+                except Exception as exc:  # noqa: BLE001
+                    fehler += 1
+                    log.warning("Lesefehler %s.%s: %s", self.cfg.station, name, exc)
+                    continue
+
+                payload = {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "value": datenwert.Value.Value,
+                    "quality": quality_of(datenwert.StatusCode),
+                    "unit": "",
+                }
+                await mqtt.publish(topic_for(self.cfg, name), json.dumps(payload).encode())
+
+            if self.nodes and fehler == len(self.nodes):
+                raise ConnectionError(
+                    f"{self.cfg.station}: kein einziger Knoten lesbar — Verbindung erneuern"
+                )
+            await asyncio.sleep(self.cfg.poll_s)
+
+
+async def main() -> None:
+    stations = load_config(CONFIG_PATH)
+    log.info("Konnektor startet für %d Stationen", len(stations))
+
+    while True:
+        try:
+            async with aiomqtt.Client(MQTT_HOST, MQTT_PORT) as mqtt:
+                log.info("MQTT verbunden: %s:%d", MQTT_HOST, MQTT_PORT)
+                bridges = [StationBridge(cfg) for cfg in stations]
+                await asyncio.gather(*(b.run(mqtt) for b in bridges))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MQTT-Verbindung verloren (%s) — neuer Versuch in 5s", exc)
+            await asyncio.sleep(5.0)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

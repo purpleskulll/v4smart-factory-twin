@@ -1,0 +1,15 @@
+apiVersion: 1
+datasources:
+  - name: zellwerk-timescale
+    type: postgres
+    uid: zellwerk-timescale
+    url: timescaledb:5432
+    database: zellwerk
+    user: zellwerk
+    secureJsonData:
+      password: ${ZW_DB_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: true
+    isDefault: true

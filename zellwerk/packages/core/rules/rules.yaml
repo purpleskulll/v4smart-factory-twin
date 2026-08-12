@@ -1,0 +1,96 @@
+# Edge-Regeln (SPEC §8.3)
+#
+# Deterministisch, ohne LLM, ohne Datenbank-Roundtrip. Diese Datei wird von
+# Menschen gepflegt: Ein Agent darf Änderungen als Diff VORSCHLAGEN, aber nie
+# selbst einspielen (§8.3). Wer eine Regel ändert, ändert das Verhalten der
+# Anlage — das gehört in einen Review, nicht in einen Modellaufruf.
+#
+# Platzhalter: `...` steht für beliebige Topic-Ebenen, `*` für genau eine.
+# `{channel}` wird aus dem auslösenden Topic (z. B. `ch3_temp_c`) übernommen.
+
+- id: formation-overtemp
+  when:
+    topic: "zellwerk/v1/.../formation01/pv/ch*_temp_c"
+    op: ">"
+    value: 50
+    for_s: 3
+    # Nur GUTE Werte: ein ausgefallener Kanal (F5) meldet quality=bad und
+    # darf diese Regel nicht auslösen — er ist kein Temperaturproblem.
+    quality: good
+  then:
+    - publish:
+        topic: "zellwerk/v1/werk1/zelle/linie1/formation01/cmd/derate_channel"
+        payload: { factor: 0.5 }
+    - event:
+        severity: alarm
+        code: FORM_OVERTEMP
+  cooldown_s: 60
+  note: >
+    Die Sicherheitsabschaltung selbst bleibt SPS-seitig (simuliert). Diese Regel
+    drosselt nur — sie ist eine Betriebs-, keine Schutzfunktion.
+
+- id: viskositaet-ausserhalb-fenster
+  when:
+    topic: "zellwerk/v1/.../mixer01/pv/viskositaet_pas"
+    op: ">"
+    value: 6.0
+    for_s: 30
+    quality: good
+  then:
+    - event:
+        severity: warn
+        code: MIX_VISC_HIGH
+  cooldown_s: 300
+  note: >
+    Frühwarnung für F1. Bewusst nur ein Ereignis, keine Aktion: der Mischer
+    lässt sich nicht sinnvoll automatisch korrigieren, und die Charge ist zu
+    diesem Zeitpunkt noch verwendbar. Die Bewertung macht Playbook 10.1.
+
+- id: porositaet-unter-soll
+  when:
+    topic: "zellwerk/v1/.../calender01/pv/porositaet_pct"
+    op: "<"
+    value: 28.0
+    for_s: 20
+    quality: good
+  then:
+    - event:
+        severity: alarm
+        code: CAL_POROSITY_LOW
+  cooldown_s: 300
+  note: >
+    Zweites Glied der F1-Kette. Ab hier ist mit Kapazitätsverlust in der
+    Formierung zu rechnen — der Alarm ist der Auslöser für die Ausschuss-Triage.
+
+- id: dosierung-unter-toleranz
+  when:
+    topic: "zellwerk/v1/.../filling01/pv/dosiermenge_g"
+    op: "<"
+    value: 4.925
+    for_s: 15
+    quality: good
+  then:
+    - event:
+        severity: warn
+        code: FILL_DOSE_LOW
+  cooldown_s: 300
+  note: >
+    F4. Fällt in der Station selbst kaum auf; ohne diesen Alarm wäre die
+    Unterdosierung erst über die Genealogie der betroffenen Zellen zu finden.
+
+- id: ausrichtungsfehler-hoch
+  when:
+    topic: "zellwerk/v1/.../assembly01/pv/ausrichtungsfehler_um"
+    op: ">"
+    value: 300.0
+    for_s: 10
+    quality: good
+  then:
+    - event:
+        severity: alarm
+        code: ASM_ALIGN_HIGH
+  cooldown_s: 180
+  note: >
+    F2 wird hier sichtbar (Delamination durch zu heiß getrocknete Elektroden).
+    Die Ursache liegt zwei Stationen früher — genau der Fall, für den die
+    Genealogie da ist.
