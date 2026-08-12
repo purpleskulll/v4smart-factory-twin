@@ -18,3 +18,6 @@
 
 # Screenshots der Sichtprüfung (Schritt 06/07)
 artifacts/
+
+# Graphify-Build-Artefakte (mit 'graphify update .' reproduzierbar)
+graphify-out/

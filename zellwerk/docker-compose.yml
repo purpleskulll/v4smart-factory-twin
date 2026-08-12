@@ -192,6 +192,21 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${ZW_GRAFANA_PASSWORD:-zellwerk-demo}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Hinter einem Reverse-Proxy MUSS Grafana seine öffentliche Adresse
+      # kennen, sonst zeigen Weiterleitungen nach dem Login auf den internen
+      # Containernamen und die Anmeldung endet im Nichts.
+      GF_SERVER_ROOT_URL: ${ZW_GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_SERVER_DOMAIN: ${ZW_GRAFANA_DOMAIN:-localhost}
+      # Der Proxy setzt X-Forwarded-*; ohne dieses Flag hält Grafana jede
+      # Anfrage für lokal und protokolliert die falsche Herkunft.
+      GF_SERVER_ENFORCE_DOMAIN: "false"
+      # MUSS hier stehen: die provisionierte Datenquelle enthält
+      # `${ZW_DB_PASSWORD}`, und Grafana löst diesen Platzhalter aus SEINER
+      # eigenen Umgebung auf — nicht aus der von Compose. Fehlt die Variable,
+      # expandiert sie zu einem leeren Passwort. Die Datenquelle taucht dann
+      # in der Oberfläche völlig normal auf und jede Abfrage scheitert mit
+      # "password authentication failed".
+      ZW_DB_PASSWORD: ${ZW_DB_PASSWORD:-zellwerk}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./dashboards/provisioning:/etc/grafana/provisioning:ro
