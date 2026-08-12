@@ -22,6 +22,8 @@ gemessen wurde:
 | Kausalkette F1 | Viskosität 6,99 Pa·s (Soll 2–6) → Streuung 10,95 µm → Porosität 20,62 % (Soll 28–38) → Kapazitätsausfall |
 | Genealogie | von der Ausschusszelle per SQL bis zur Slurry-Charge auflösbar, vier Stufen |
 | Edge-Regel-Latenz | Symptom → Kommando: min 0,30 ms · Median 0,40 ms · max 0,50 ms (n=8) gegen eine Anforderung von 500 ms |
+| Geschlossener Regelkreis | Regel feuert bei 50,51 °C → Kommando in 0,5 ms → Simulator drosselt auf Faktor 0,50 → Temperatur fällt auf 44,4 °C |
+| Ingest unter Last | 99.990 Werte in 20 s geschrieben = 4999/s, **0 % Verlust**. Der Lastgenerator selbst erreichte 4999/s — die Obergrenze des Schreibpfads liegt also höher und wurde nicht ermittelt |
 | Fließgleichgewicht | vier Stunden Normalbetrieb, alle Warteschlangen bei 0 |
 | Ausschuss-Triage | Wurzelstation korrekt benannt, Alternativursache aktiv ausgeschlossen, 11 Werkzeugaufrufe in 8 Runden |
 | F3 gegen F5 | korrekt gegensätzlich klassifiziert: Quarantäne vs. Umlagern |

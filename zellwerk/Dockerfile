@@ -15,6 +15,11 @@ RUN uv pip install --system --no-cache -r pyproject.toml
 
 COPY packages/ /app/
 COPY data/ /app/data/
+# Nur der Lastgenerator, nicht die ganze Testsuite: er wird gegen den LAUFENDEN
+# Stack ausgeführt (docs/decisions.md D4) und muss deshalb im Image liegen.
+# Die übrigen Tests laufen offline auf dem Entwicklungsrechner.
+COPY tests/load/ /app/tests/load/
+RUN touch /app/tests/__init__.py
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
