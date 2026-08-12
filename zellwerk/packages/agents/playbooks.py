@@ -71,10 +71,13 @@ TOOLS = [
     tool_schema(
         "find_similar_cells",
         "Findet Zellen mit ähnlichem Fehlerbild oder gemeinsamer Herkunft. Mit "
-        "lot_id werden ALLE Nachkommen einer Charge gefunden, auch mittelbare.",
+        "lot_id werden ALLE Nachkommen einer Charge gefunden, auch mittelbare; mit "
+        "formationskanal alle Zellen, die auf einem bestimmten Kanal formiert wurden.",
         {"status": {"type": "string", "description": "in_prozess | ok | ausschuss | quarantaene"},
          "grade": {"type": "string"}, "lot_id": {"type": "string"},
          "kapazitaet_unter": {"type": "number"},
+         "formationskanal": {"type": "integer",
+                             "description": "Zellen, die auf diesem Formierkanal liefen"},
          "limit": {"type": "integer"}},
     ),
     tool_schema(
@@ -105,7 +108,7 @@ DISPATCH = {
     "trace_cell_genealogy": lambda a: tools.trace_cell_genealogy(a.get("serial"), a.get("lot_id")),
     "find_similar_cells": lambda a: tools.find_similar_cells(
         a.get("status"), a.get("grade"), a.get("lot_id"),
-        a.get("kapazitaet_unter"), a.get("limit", 50)),
+        a.get("kapazitaet_unter"), a.get("formationskanal"), a.get("limit", 50)),
     "get_active_alarms": lambda a: tools.get_active_alarms(a.get("severity"), a.get("limit", 50)),
     "propose_action": lambda a: tools.propose_action(a["action"], a.get("params", {}),
                                                      a["begruendung"]),

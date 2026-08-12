@@ -82,7 +82,16 @@ class Simulation:
         await self._publish_traces()
 
     async def _publish_traces(self) -> None:
-        """Neue Lose und Zellen als `trace` in den UNS (SPEC §6.1)."""
+        """Neue Lose und Zellen als `trace` in den UNS (SPEC §6.1).
+
+        Zeitstempel sind ECHTZEIT, nicht Simulationszeit. Das ist wichtig: der
+        Konnektor stempelt jeden Messwert mit der Wanduhr. Trüge ein Los
+        stattdessen seine Simulationszeit, liefen beide Achsen im Zeitraffer
+        auseinander — die Abfrage „Prozesswerte im Fertigungszeitraum dieses
+        Loses" fände dann nichts, und der Batteriepass bliebe leer. Genau das
+        ist passiert, bevor diese Zeile so aussah wie jetzt.
+        """
+        jetzt = datetime.now(UTC).isoformat()
         neue: list[tuple[str, dict]] = []
 
         for lot_id, lot in self.factory.genealogy.lots.items():
@@ -92,7 +101,7 @@ class Simulation:
             neue.append((
                 f"zellwerk/v1/{SITE}/{lot.station}/trace/lot",
                 {
-                    "ts": lot.started_at.isoformat(),
+                    "ts": jetzt,
                     "value": {
                         "lot_id": lot.id, "station": lot.station, "material": lot.material,
                         "parent_id": lot.parent_id,
@@ -115,7 +124,7 @@ class Simulation:
             neue.append((
                 f"zellwerk/v1/{SITE}/zelle/trace/cell",
                 {
-                    "ts": cell.created_at.isoformat(),
+                    "ts": jetzt,
                     "value": {"serial": cell.serial, "lot_id": cell.lot_id,
                               "status": cell.status, "grade": cell.grade,
                               # Die Merkmale tragen die gemessene Kapazität und

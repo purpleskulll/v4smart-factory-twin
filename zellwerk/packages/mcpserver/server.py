@@ -97,6 +97,7 @@ async def trace_cell_genealogy(serial: str | None = None, lot_id: str | None = N
 async def find_similar_cells(status: str | None = None, grade: str | None = None,
                              lot_id: str | None = None,
                              kapazitaet_unter: float | None = None,
+                             formationskanal: int | None = None,
                              limit: int = 50) -> dict:
     """Findet Zellen mit ähnlichem Fehlerbild oder gemeinsamer Herkunft.
 
@@ -105,9 +106,13 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
     Betroffenheitsanalyse ("welche Zellen sind von Charge X betroffen und wo
     sind sie jetzt?").
 
+    Mit `formationskanal` findet man alle Zellen, die auf einem bestimmten
+    Formierkanal gelaufen sind — die Frage stellt sich bei jedem Kanalproblem.
+
     status: in_prozess | ok | ausschuss | quarantaene
     """
-    return await tools.find_similar_cells(status, grade, lot_id, kapazitaet_unter, limit)
+    return await tools.find_similar_cells(status, grade, lot_id, kapazitaet_unter,
+                                          formationskanal, limit)
 
 
 @mcp.tool()

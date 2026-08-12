@@ -309,6 +309,7 @@ async def trace_cell_genealogy(serial: str | None = None, lot_id: str | None = N
 
 async def find_similar_cells(status: str | None = None, grade: str | None = None,
                              lot_id: str | None = None, kapazitaet_unter: float | None = None,
+                             formationskanal: int | None = None,
                              limit: int = 50) -> dict:
     """Betroffenheitsanalyse: Zellen mit ähnlichem Fehlerbild oder Herkunft.
 
@@ -339,6 +340,12 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
             if kapazitaet_unter is not None:
                 werte.append(kapazitaet_unter)
                 bedingungen.append(f"(traits->>'kapazitaet_ah')::float < ${len(werte)}")
+            if formationskanal is not None:
+                # Der Kanal steht als Merkmal an der Zelle. Ohne diesen Filter
+                # ließ sich "welche Zellen liefen auf Kanal N?" nicht
+                # beantworten — die Frage kommt bei jedem Kanalproblem auf.
+                werte.append(float(formationskanal))
+                bedingungen.append(f"(traits->>'formationskanal')::float = ${len(werte)}")
             wo = (" WHERE " + " AND ".join(bedingungen)) if bedingungen else ""
             werte.append(limit)
             zeilen = await conn.fetch(
@@ -356,7 +363,8 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
 
     ergebnis = {"anzahl": len(treffer), "zellen": treffer,
                 "kriterien": {"status": status, "grade": grade, "lot_id": lot_id,
-                              "kapazitaet_unter": kapazitaet_unter}}
+                              "kapazitaet_unter": kapazitaet_unter,
+                              "formationskanal": formationskanal}}
     await _audit("find_similar_cells", ergebnis["kriterien"], ergebnis={"treffer": len(treffer)})
     return ergebnis
 
