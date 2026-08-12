@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import operator
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
@@ -98,7 +98,7 @@ class RuleEngine:
         self._state: dict[tuple[str, str], _State] = {}
 
     @classmethod
-    def from_yaml(cls, path: str) -> "RuleEngine":
+    def from_yaml(cls, path: str) -> RuleEngine:
         with open(path, encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or []
         return cls([cls._parse_rule(entry) for entry in raw])
@@ -110,7 +110,8 @@ class RuleEngine:
         for step in entry.get("then", []):
             if "publish" in step:
                 pub = step["publish"]
-                actions.append(Action("publish", topic=pub["topic"], payload=pub.get("payload", {})))
+                actions.append(Action("publish", topic=pub["topic"],
+                                      payload=pub.get("payload", {})))
             elif "event" in step:
                 ev = step["event"]
                 actions.append(Action("event", severity=ev.get("severity", "warn"),

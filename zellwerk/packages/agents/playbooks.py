@@ -110,8 +110,8 @@ DISPATCH = {
         a.get("status"), a.get("grade"), a.get("lot_id"),
         a.get("kapazitaet_unter"), a.get("formationskanal"), a.get("limit", 50)),
     "get_active_alarms": lambda a: tools.get_active_alarms(a.get("severity"), a.get("limit", 50)),
-    "propose_action": lambda a: tools.propose_action(a["action"], a.get("params", {}),
-                                                     a["begruendung"]),
+    "propose_action": lambda a: tools.propose_action(
+        a["action"], a.get("params", {}), a["begruendung"]),
     "export_battery_pass": lambda a: tools.export_battery_pass(a["serial"]),
 }
 
@@ -308,9 +308,8 @@ benennt."""
         bericht = json.dumps(pass_json, ensure_ascii=False, indent=2)
         if fehlend:
             bericht += f"\n\nLEERE FELDER: {', '.join(fehlend)}"
-        return PlaybookErgebnis(self.name, bericht,
-                                [{"werkzeug": "export_battery_pass", "eingabe": {"serial": serial}}],
-                                0, False)
+        evidenz = [{"werkzeug": "export_battery_pass", "eingabe": {"serial": serial}}]
+        return PlaybookErgebnis(self.name, bericht, evidenz, 0, False)
 
 
 PLAYBOOKS = {

@@ -56,7 +56,8 @@ class Latenz:
 LATENZ = Latenz()
 
 
-async def log_event(pool: asyncpg.Pool, asset: str, severity: str, code: str, payload: dict) -> None:
+async def log_event(pool: asyncpg.Pool, asset: str, severity: str,
+                    code: str, payload: dict) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute(
@@ -91,7 +92,8 @@ async def run(engine: RuleEngine, pool: asyncpg.Pool) -> None:
                 station = topic.split("/")[5] if len(topic.split("/")) > 5 else None
                 for action in engine.resolve_actions(trigger):
                     if action.kind == "publish" and action.topic:
-                        await client.publish(action.topic, json.dumps(action.payload or {}).encode())
+                        await client.publish(action.topic,
+                                             json.dumps(action.payload or {}).encode())
                         ms = (time.perf_counter() - eingang) * 1000.0
                         LATENZ.add(ms)
                         log.warning(
@@ -120,7 +122,7 @@ async def main() -> None:
     engine = RuleEngine.from_yaml(RULES_PATH)
 
     pool = None
-    for versuch in range(30):
+    for _ in range(30):
         try:
             pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=4)
             break

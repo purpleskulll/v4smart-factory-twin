@@ -12,6 +12,21 @@ Zellen verlieren in der Formierung Kapazität. Erst diese Kette macht die
 Genealogie zu mehr als einer Datenbanktabelle: sie ist der einzige Weg, eine
 Ursache zu belegen statt zu vermuten.
 
+## Gemessen im laufenden Stack
+
+Keine Planzahlen — alles aus echten Läufen, jeweils mit dem Weg, auf dem es
+gemessen wurde:
+
+| | |
+|---|---|
+| Kausalkette F1 | Viskosität 6,99 Pa·s (Soll 2–6) → Streuung 10,95 µm → Porosität 20,62 % (Soll 28–38) → Kapazitätsausfall |
+| Genealogie | von der Ausschusszelle per SQL bis zur Slurry-Charge auflösbar, vier Stufen |
+| Edge-Regel-Latenz | Symptom → Kommando: min 0,30 ms · Median 0,40 ms · max 0,50 ms (n=8) gegen eine Anforderung von 500 ms |
+| Fließgleichgewicht | vier Stunden Normalbetrieb, alle Warteschlangen bei 0 |
+| Ausschuss-Triage | Wurzelstation korrekt benannt, Alternativursache aktiv ausgeschlossen, 11 Werkzeugaufrufe in 8 Runden |
+| F3 gegen F5 | korrekt gegensätzlich klassifiziert: Quarantäne vs. Umlagern |
+| Batteriepass | 16 Prozess-Kennwerte über vier Fertigungsstufen |
+
 ## Die sechs Stationen
 
 | Station | Prozessvariablen (Auswahl) | Sollbereich |

@@ -90,10 +90,10 @@ class Lot:
         station: str,
         material: str,
         now: datetime,
-        parent: "Lot | None" = None,
+        parent: Lot | None = None,
         prefix: str = "L",
         **traits: float,
-    ) -> "Lot":
+    ) -> Lot:
         lot = cls(
             id=f"{prefix}-{next(_LOT_COUNTER):04d}",
             station=station,
@@ -122,7 +122,7 @@ class Cell:
     traits: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def create(cls, lot: Lot, now: datetime) -> "Cell":
+    def create(cls, lot: Lot, now: datetime) -> Cell:
         serial = f"ZW-{now.year}-{next(_CELL_COUNTER):06d}"
         cell = cls(serial=serial, lot_id=lot.id, created_at=now, traits=dict(lot.traits))
         return cell

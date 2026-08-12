@@ -653,10 +653,13 @@ class Factory:
         werte: dict[str, list[PV]] = {}
 
         for station in self.stations:
-            if station is self.formation:
-                # Formierung taktet mit 10 s (SPEC §7.1).
-                if int((self.now - self.started_at).total_seconds()) % int(station.tick_s) != 0:
-                    continue
+            # Formierung taktet mit 10 s (SPEC §7.1), die übrigen mit 1 s.
+            takt_uebersprungen = (
+                station is self.formation
+                and int((self.now - self.started_at).total_seconds()) % int(station.tick_s) != 0
+            )
+            if takt_uebersprungen:
+                continue
             werte[station.station_id] = station.tick(self.now)
 
         self._move_material()
@@ -684,9 +687,11 @@ class Factory:
         if self.assembly.current_lot is None and self._kalander_queue:
             neu = self.assembly.feed(self._kalander_queue.pop(0), now)
             self.genealogy.add_lot(neu, self.assembly.input_lot, now)
-        if (cell := self.assembly.maybe_build_cell(now, self.genealogy)) is not None:
-            if cell.status != "ausschuss":
-                self._befuell_queue.append(cell)
+        cell = self.assembly.maybe_build_cell(now, self.genealogy)
+        if cell is not None and cell.status != "ausschuss":
+            # Ausschuss aus der Assemblierung (Delamination) geht gar nicht erst
+            # in die Befüllung — er ist bereits verloren.
+            self._befuell_queue.append(cell)
 
         while self._befuell_queue:
             cell = self._befuell_queue.pop(0)

@@ -166,7 +166,8 @@ async def consume(pool: asyncpg.Pool, queue: asyncio.Queue) -> None:
                 continue
 
             value = payload.get("value")
-            numerisch = value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+            ist_zahl = isinstance(value, (int, float)) and not isinstance(value, bool)
+            numerisch = value if ist_zahl else None
             text = None if numerisch is not None else (str(value) if value is not None else None)
 
             ts = datetime.fromisoformat(payload["ts"]) if payload.get("ts") else datetime.now(UTC)

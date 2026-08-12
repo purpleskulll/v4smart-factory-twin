@@ -149,6 +149,51 @@ class Simulation:
                         exc, len(neue))
 
 
+async def kommando_empfaenger() -> None:
+    """Hört auf `cmd`-Topics und setzt sie an der Anlage um (SPEC §6.1, §8.3).
+
+    Ohne diesen Empfänger ist die Kette OFFEN: die Edge-Regel erkennt die
+    Übertemperatur, publiziert brav ihr Drosselkommando — und nichts passiert.
+    Gemessen 2026-08-13: die Regel feuerte in 0,4 ms, `ch3_derate` stand aber
+    weiterhin auf 1,00 und die Temperatur stieg ungebremst weiter. Eine Regel,
+    deren Wirkung niemand entgegennimmt, ist eine Protokollzeile, keine
+    Schutzfunktion.
+    """
+    # Dauerhaft aktiv: der Empfänger muss auch dann bereitstehen, wenn der
+    # Takt gerade neu startet — sonst gingen Kommandos in dieser Lücke verloren.
+    while True:
+        try:
+            async with aiomqtt.Client(MQTT_HOST, MQTT_PORT) as client:
+                await client.subscribe("zellwerk/v1/+/+/+/+/cmd/#")
+                log.info("Kommando-Empfänger aktiv (cmd-Topics)")
+                async for message in client.messages:
+                    topic = str(message.topic)
+                    try:
+                        payload = json.loads(message.payload)
+                    except (ValueError, TypeError):
+                        log.warning("Kommando mit unlesbarem Rumpf: %s", topic)
+                        continue
+
+                    if topic.endswith("/derate_channel"):
+                        kanal = payload.get("channel")
+                        faktor = float(payload.get("factor", 0.5))
+                        if kanal is None:
+                            log.warning("derate_channel ohne Kanalangabe: %s", payload)
+                            continue
+                        if SIM.factory.formation.derate_channel(int(kanal), faktor):
+                            log.warning("Kanal %s auf Faktor %.2f gedrosselt (Kommando)",
+                                        kanal, faktor)
+                        else:
+                            log.warning("Kanal %s unbekannt — Kommando ignoriert", kanal)
+                    else:
+                        log.info("unbekanntes Kommando: %s", topic)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Kommando-Empfänger getrennt (%s) — neuer Versuch in 5s", exc)
+            await asyncio.sleep(5)
+
+
 SIM = Simulation()
 
 
@@ -156,11 +201,13 @@ SIM = Simulation()
 async def lifespan(app: FastAPI):
     await SIM.start_opcua()
     task = asyncio.create_task(SIM.run())
+    cmd_task = asyncio.create_task(kommando_empfaenger())
     log.info("Musterfabrik läuft — %d Stationen, Takt %.1fs (Speed %.1fx)",
              len(SIM.servers), TICK_S, SPEED)
     yield
     SIM.running = False
     task.cancel()
+    cmd_task.cancel()
     await SIM.stop_opcua()
 
 

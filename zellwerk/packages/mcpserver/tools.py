@@ -111,8 +111,10 @@ async def get_asset_state(asset_id: str) -> dict:
     grenzen = {f["name"]: (f["min_value"], f["max_value"]) for f in fenster}
     pvs = []
     for w in werte:
-        eintrag = {"name": w["name"], "wert": w["value"] if w["value"] is not None else w["text_value"],
-                   "einheit": w["unit"], "qualitaet": w["quality"], "ts": w["ts"].isoformat()}
+        eintrag = {"name": w["name"],
+                   "wert": w["value"] if w["value"] is not None else w["text_value"],
+                   "einheit": w["unit"], "qualitaet": w["quality"],
+                   "ts": w["ts"].isoformat()}
         if w["name"] in grenzen and w["value"] is not None:
             lo, hi = grenzen[w["name"]]
             eintrag["sollbereich"] = [lo, hi]
@@ -334,9 +336,11 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
         else:
             bedingungen, werte = [], []
             if status:
-                werte.append(status); bedingungen.append(f"status = ${len(werte)}")
+                werte.append(status)
+                bedingungen.append(f"status = ${len(werte)}")
             if grade:
-                werte.append(grade); bedingungen.append(f"grade = ${len(werte)}")
+                werte.append(grade)
+                bedingungen.append(f"grade = ${len(werte)}")
             if kapazitaet_unter is not None:
                 werte.append(kapazitaet_unter)
                 bedingungen.append(f"(traits->>'kapazitaet_ah')::float < ${len(werte)}")
@@ -458,6 +462,10 @@ async def export_battery_pass(serial: str) -> dict:
             if pv["mittel"] is not None:
                 prozess[f"{schritt['station']}.{pv['name']}"] = pv["mittel"]
 
+    erstellt = zelle.get("created_at")
+    if hasattr(erstellt, "isoformat"):
+        erstellt = erstellt.isoformat()
+
     pass_json = {
         "hinweis": "DEMO-SUBSET — nicht rechtsverbindlich. Erzeugt aus Simulationsdaten.",
         "rechtsgrundlage": "Verordnung (EU) 2023/1542 (Demo-Auswahl)",
@@ -467,8 +475,7 @@ async def export_battery_pass(serial: str) -> dict:
         "zelltyp": {"bezeichnung": "ZW-NMC-5Ah", "chemie": "NMC811 / Graphit",
                     "format": "Pouch", "nennkapazitaet_ah": 5.0, "nennspannung_v": 3.7},
         "gemessene_kapazitaet_ah": traits.get("kapazitaet_ah"),
-        "produktion": {"datum": zelle.get("created_at").isoformat()
-                       if hasattr(zelle.get("created_at"), "isoformat") else zelle.get("created_at"),
+        "produktion": {"datum": erstellt,
                        "status": zelle.get("status"), "grade": zelle.get("grade")},
         "genealogie": [{"stufe": s["station"], "lot_id": s["lot_id"], "material": s["material"]}
                        for s in genealogie["pfad"]],
