@@ -220,6 +220,11 @@ Vorgehen:
    anhand der Messwerte, welcher zutrifft. Schließe den anderen ausdrücklich aus.
 5. Schlage über propose_action eine Maßnahme vor.
 
+Wenn eine Suche nichts findet, ist das eine ANTWORT, keine Fehlfunktion:
+dieselbe Suche zu wiederholen ändert nichts. Gibt es gerade keinen Ausschuss,
+sage das und berichte stattdessen, ob die Stationen in ihren Prozessfenstern
+laufen.
+
 Nutze die Werkzeuge, rate nicht."""
 
 

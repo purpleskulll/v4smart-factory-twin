@@ -252,15 +252,17 @@ services:
       timescaledb:
         condition: service_healthy
 
-  # Die Agenten laufen nicht als Dauerdienst: ein Playbook wird angestoßen,
-  # arbeitet und ist fertig. Der Container hält sich nur bereit, damit
-  # `docker compose exec agents python -m agents.runner ...` sofort läuft.
+  # Die Agenten sind über HTTP erreichbar, nicht nur über die Kommandozeile.
+  # Ohne das wären sie in einer Vorführung unsichtbar — und der Agent, der eine
+  # Ursache findet und belegt, ist der eigentliche Gegenstand dieses Systems.
+  # Die Kommandozeile bleibt zusätzlich nutzbar:
+  #   docker compose exec agents python -m agents.runner triage
   agents:
     <<: *python
     container_name: zellwerk-agents
     profiles: ["ai"]
     networks: [backend]
-    command: ["sleep", "infinity"]
+    command: ["uvicorn", "agents.api:app", "--host", "0.0.0.0", "--port", "8010"]
     environment:
       <<: *pyenv
       ZW_LLM_BASE_URL: ${ZW_LLM_BASE_URL:-http://zellwerk-llm:4010}
@@ -289,6 +291,7 @@ services:
       ZELLWERK_HOST: ${ZELLWERK_HOST:-}
       LEGACY_HOST: ${LEGACY_HOST:-}
       CONSOLE_HOST: ${ZW_CONSOLE_HOST:-}
+      AGENTS_HOST: ${ZW_AGENTS_HOST:-}
       FACTORY_HOST: ${ZW_FACTORY_HOST:-}
       ACME_EMAIL: ${ACME_EMAIL:-}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}

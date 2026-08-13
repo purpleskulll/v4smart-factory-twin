@@ -62,6 +62,17 @@ http://{$CONSOLE_HOST} {
 	}
 }
 
+# --- Agenten: Playbooks starten und Berichte lesen --------------------------
+# Hinter Basic Auth: ein Lauf kostet Modell-Aufrufe, das gehört nicht offen
+# ins Netz.
+http://{$AGENTS_HOST} {
+	import auth
+	encode zstd gzip
+	reverse_proxy agents:8010 {
+		import proxy_header
+	}
+}
+
 # --- Musterfabrik: Zustand und Fault-Injection ------------------------------
 # Hinter Basic Auth, denn hierüber lassen sich Fehlerszenarien auslösen.
 http://{$FACTORY_HOST} {

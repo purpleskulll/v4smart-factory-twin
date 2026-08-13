@@ -1,0 +1,213 @@
+{
+  "uid": "zellwerk-genealogie",
+  "title": "zellwerk — Zellen & Genealogie",
+  "description": "Rückverfolgung jeder Zelle bis zur Slurry-Charge, Aufträge und Ausschuss.",
+  "tags": [
+    "zellwerk"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Rückverfolgung",
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "\nJede Zelle lässt sich bis zur Slurry-Charge im Mischer zurückverfolgen. Das ist\ndie Grundlage für Ursachensuche **und** für den Batteriepass — dieselbe Kette,\neinmal rückwärts und einmal vorwärts gelesen.\n\nDie Merkmale (`traits`) tragen die Werte, mit denen ein Los gefertigt wurde.\nDort steht die Evidenz, auf die sich eine Ursachenaussage stützt.\n"
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Zellen nach Status",
+      "id": 2,
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT status AS \"Status\", count(*) AS \"Anzahl\"\nFROM cell GROUP BY status ORDER BY count(*) DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Fertigungsaufträge",
+      "id": 3,
+      "description": "",
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 18,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT po.id AS \"Auftrag\", po.produkt AS \"Produkt\", po.sollmenge AS \"Soll\",\n       count(c.serial) AS \"gefertigt\",\n       count(*) FILTER (WHERE c.status='ok') AS \"in Ordnung\",\n       count(*) FILTER (WHERE c.status='ausschuss') AS \"Ausschuss\"\nFROM production_order po LEFT JOIN cell c ON c.order_id = po.id\nGROUP BY po.id, po.produkt, po.sollmenge ORDER BY po.id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Auffällige Zellen — mit ihrer Herkunft",
+      "id": 4,
+      "description": "Zwei Ursachen erzeugen dasselbe Symptom: zu wenig Kapazität entsteht durch zu niedrige Porosität ODER durch zu wenig Elektrolyt. Die beiden rechten Spalten trennen die Fälle.",
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT c.serial AS \"Seriennummer\", c.status AS \"Status\", c.grade AS \"Befund\",\n       c.order_id AS \"Auftrag\",\n       round((c.traits->>'kapazitaet_ah')::numeric, 3) AS \"Kapazität (Ah)\",\n       round((c.traits->>'dosiermenge_g')::numeric, 3) AS \"Elektrolyt (g)\",\n       round((c.traits->>'vorstufe_porositaet_pct')::numeric, 2) AS \"Porosität (%)\",\n       round((c.traits->>'vorstufe_vorstufe_vorstufe_viskositaet_pas')::numeric, 2) AS \"Viskosität (Pa·s)\"\nFROM cell c\nWHERE c.status IN ('ausschuss','quarantaene')\nORDER BY c.created_at DESC LIMIT 25"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Genealogie — vollständiger Pfad der zuletzt gefertigten Zelle",
+      "id": 5,
+      "description": "Von der Zelle rückwärts bis zur Slurry-Charge.",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH RECURSIVE juengste AS (\n    SELECT serial, lot_id FROM cell ORDER BY created_at DESC LIMIT 1\n), pfad AS (\n    SELECT j.serial, l.id AS lot_id, l.station, l.material, l.parent_id,\n           l.traits, 0 AS tiefe\n    FROM juengste j JOIN lot l ON l.id = j.lot_id\n  UNION ALL\n    SELECT p.serial, l.id, l.station, l.material, l.parent_id, l.traits, p.tiefe+1\n    FROM pfad p JOIN lot l ON l.id = p.parent_id\n)\nSELECT tiefe AS \"Stufe\", station AS \"Station\", lot_id AS \"Charge\",\n       material AS \"Material\", traits::text AS \"Merkmale\"\nFROM pfad ORDER BY tiefe"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Chargen je Station",
+      "id": 6,
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT station AS \"Station\", count(*) AS \"Chargen\"\nFROM lot GROUP BY station ORDER BY station"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Offene Ereignisse",
+      "id": 7,
+      "description": "Wiederholungen werden am Eintrag hochgezählt, statt neue Zeilen zu erzeugen.",
+      "gridPos": {
+        "x": 8,
+        "y": 30,
+        "w": 16,
+        "h": 7
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT ts AS \"Zeitpunkt\", asset_id AS \"Anlage\", severity AS \"Schwere\",\n       code AS \"Code\", payload->>'wiederholungen' AS \"Wiederholungen\",\n       payload->>'wert' AS \"Auslösender Wert\"\nFROM event WHERE acked = false ORDER BY ts DESC LIMIT 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ]
+}

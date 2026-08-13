@@ -1,0 +1,145 @@
+{
+  "uid": "zellwerk-agenten",
+  "title": "zellwerk — Agenten & Befunde",
+  "description": "Was die KI-Agenten untersuchen, was sie vorschlagen und womit sie es belegen.",
+  "tags": [
+    "zellwerk"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Was hier zu sehen ist",
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "\nDie Agenten arbeiten im **Shadow Mode**: sie untersuchen und schlagen vor —\nausgeführt wird nichts. Jeder Werkzeugaufruf landet im Audit-Log, damit\nnachvollziehbar bleibt, worauf ein Vorschlag beruht.\n\nEinen Lauf starten (ohne Terminal): die **Agenten-Adresse** öffnen\n(`zellwerk-agenten…`) und dort ein Playbook anklicken. Der Bericht steht\ndanach dort und zusätzlich unten in dieser Tabelle.\n\nEin Vorschlag ohne Beleg ist wertlos — deshalb steht in jeder Begründung,\nwelche Werte, welche Charge und welcher Zeitraum ihn stützen.\n"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Vorschläge der Agenten — mit ihrer Begründung",
+      "id": 2,
+      "description": "Der Abschluss jeder Untersuchung. Nichts davon wurde ausgeführt.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS \"Zeitpunkt\",\n       replace(tool, 'propose_action:', '') AS \"Maßnahme\",\n       params::text AS \"Parameter\",\n       begruendung AS \"Begründung (die Evidenz)\"\nFROM action_log\nWHERE tool LIKE 'propose_action%'\nORDER BY ts DESC LIMIT 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Werkzeugketten — was der Agent selbst gewählt hat",
+      "id": 3,
+      "description": "Die Reihenfolge ist nicht vorgegeben — sie entsteht aus dem, was der Agent unterwegs findet.",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 14,
+        "h": 11
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS \"Zeitpunkt\", tool AS \"Werkzeug\",\n       left(params::text, 80) AS \"Parameter\", mode AS \"Modus\"\nFROM action_log\nWHERE tool NOT LIKE 'playbook%'\nORDER BY ts DESC LIMIT 40"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Werkzeugnutzung insgesamt",
+      "id": 4,
+      "description": "",
+      "gridPos": {
+        "x": 14,
+        "y": 14,
+        "w": 10,
+        "h": 11
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT tool AS \"Werkzeug\", count(*) AS \"Aufrufe\"\nFROM action_log WHERE tool NOT LIKE 'playbook%'\nGROUP BY tool ORDER BY count(*) DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Playbook-Läufe",
+      "id": 5,
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "zellwerk-timescale"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS \"Zeitpunkt\",\n       replace(tool, 'playbook:', '') AS \"Playbook\",\n       ergebnis->>'runden' AS \"Runden\",\n       left(begruendung, 400) AS \"Bericht (Anfang)\"\nFROM action_log WHERE tool LIKE 'playbook%'\nORDER BY ts DESC LIMIT 10"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ]
+}

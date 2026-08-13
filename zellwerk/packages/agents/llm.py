@@ -25,7 +25,10 @@ log = logging.getLogger("agents.llm")
 
 BASE_URL = os.environ.get("ZW_LLM_BASE_URL", "http://zellwerk-llm:4010")
 MODEL = os.environ.get("ZW_MODEL", "claude-haiku-4-5-20251001")
-MAX_RUNDEN = int(os.environ.get("ZW_MAX_RUNDEN", "12"))
+# 16 statt 12: eine Untersuchung, die BEIDE Ursachen prüft (wie die
+# Ausschuss-Triage es verlangt), braucht Überblick, Suche, Genealogie,
+# Zeitreihen und Prozessfenster — und dann noch den Vorschlag.
+MAX_RUNDEN = int(os.environ.get("ZW_MAX_RUNDEN", "16"))
 
 
 @dataclass

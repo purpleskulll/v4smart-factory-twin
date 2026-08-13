@@ -319,8 +319,8 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
     von einer Charge abstammen. Genau das braucht Playbook 10.3 („welche Zellen
     sind von Slurry-Charge L-0815 betroffen?").
     """
-    p = await pool()
-    async with p.acquire() as conn:
+    p_pool = await pool()
+    async with p_pool.acquire() as conn:
         if lot_id:
             zeilen = await conn.fetch(
                 """
@@ -369,6 +369,30 @@ async def find_similar_cells(status: str | None = None, grade: str | None = None
                 "kriterien": {"status": status, "grade": grade, "lot_id": lot_id,
                               "kapazitaet_unter": kapazitaet_unter,
                               "formationskanal": formationskanal}}
+
+    # Ein leeres Ergebnis OHNE Kontext ist die häufigste Ursache für
+    # Such-Schleifen: der Aufrufer weiß nicht, ob sein Kriterium falsch war
+    # oder ob es schlicht nichts zu finden gibt, und probiert es endlos
+    # anders. Beobachtet 2026-08-13: siebenmal derselbe Aufruf, danach war
+    # das Rundenlimit erreicht und die Untersuchung ohne Ergebnis vorbei.
+    # Deshalb liefert eine leere Antwort mit, WAS es stattdessen gibt.
+    if not treffer:
+        async with p_pool.acquire() as conn:
+            verteilung = await conn.fetch(
+                "SELECT status, count(*) AS anzahl FROM cell GROUP BY status"
+                " ORDER BY count(*) DESC")
+            grades = await conn.fetch(
+                "SELECT grade, count(*) AS anzahl FROM cell WHERE grade IS NOT NULL"
+                " GROUP BY grade ORDER BY count(*) DESC LIMIT 8")
+        ergebnis["hinweis"] = (
+            "Keine Zelle erfüllt diese Kriterien. Das ist eine vollständige "
+            "Antwort, kein Fehler — dieselbe Suche noch einmal zu stellen "
+            "ändert nichts. Unten steht, was es tatsächlich gibt."
+        )
+        ergebnis["tatsaechlich_vorhanden"] = {
+            "nach_status": {r["status"]: r["anzahl"] for r in verteilung},
+            "nach_befund": {r["grade"]: r["anzahl"] for r in grades},
+        }
     await _audit("find_similar_cells", ergebnis["kriterien"], ergebnis={"treffer": len(treffer)})
     return ergebnis
 
