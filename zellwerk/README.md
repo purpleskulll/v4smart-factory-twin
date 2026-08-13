@@ -180,7 +180,7 @@ Der Fehler ist längst behoben, und der Ausschuss läuft trotzdem noch.
 | `erp-mock` | sim | Fertigungsaufträge und Stammdaten |
 | `connector` | core | OPC UA → UNS, konfigurationsgetrieben |
 | `ingest` | core | UNS → TimescaleDB, gebündelt |
-| `rules` | core | Edge-Rule-Engine, deterministisch |
+| `rules` | core | Edge-Rule-Engine, deterministisch; meldet über `core/events` |
 | `grafana` | obs | drei Dashboards |
 | `mcpserver` | ai | Fabrikmodell als MCP-Werkzeuge |
 | `agents` | ai | Playbooks über HTTP |
@@ -216,7 +216,7 @@ sendet.
 | `cell` | Einzelzelle mit Status, Grade, `order_id` und `traits` |
 | `genealogy` | Kanten: Los → Los, Los → Zelle |
 | `measurement` | Hypertable: Zeitreihen mit Qualitätskennzeichen |
-| `event` | Hypertable: Alarme und Ereignisse, quittierbar |
+| `event` | Hypertable: Alarme und Ereignisse, entprellt und quittierbar (`packages/core/events`) |
 | `action_log` | Audit: jeder Werkzeugaufruf eines Agenten |
 | `process_window` | Sollbereiche — dieselbe Wahrheit für Werkzeuge und Dashboards |
 
@@ -428,9 +428,13 @@ den Wert, verstummt ein ausgefallener Kanal stillschweigend — und ist von eine
 echten Störung nicht mehr zu unterscheiden. Genau diese Unterscheidung ist das
 Akzeptanzkriterium des Formierungs-Playbooks.
 
-**Alarme werden entprellt.** Ein Alarmsystem, das jede Grenzverletzung einzeln
-meldet, erzeugt bei einem schwankenden Messwert hunderte Einträge — und wird
-deshalb ignoriert. Genau dann ist es wertlos, wenn es gebraucht wird.
+**Alarme werden entprellt** (`packages/core/events`). Ein Alarmsystem, das jede
+Grenzverletzung einzeln meldet, erzeugt bei einem schwankenden Messwert hunderte
+Einträge — und wird deshalb ignoriert. Genau dann ist es wertlos, wenn es
+gebraucht wird. Die Ereignisschicht zählt Wiederholungen am bestehenden Eintrag
+hoch statt neue Zeilen anzulegen, hält den auslösenden Messwert als Kontext fest
+und kennt einen Lebenszyklus: `get_active_alarms` zeigt nur, was noch offen
+ist.
 
 **Zeitstempel sind Wanduhrzeit, auch im Zeitraffer.** Trüge ein Los seine
 Simulationszeit, liefen die Achsen auseinander, und die Abfrage „Prozesswerte im
