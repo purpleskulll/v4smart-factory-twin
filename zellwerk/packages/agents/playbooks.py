@@ -146,6 +146,11 @@ ARBEITSWEISE — nicht verhandelbar:
    unten stehenden Format. Ein Werkzeugaufruf ist kein Bericht — der Empfänger
    sieht nur deinen Text.
 
+AUSGABE — nur der Bericht:
+Kommentiere nicht dein eigenes Vorgehen ("Gut, die Suche zeigt…", "Lassen Sie
+mich…"). Der Leser sieht die Werkzeugaufrufe ohnehin protokolliert; ein
+Selbstgespräch davor kostet ihn nur Zeit. Beginne direkt mit BEFUND.
+
 ANTWORTFORMAT (immer diese vier Abschnitte, auf Deutsch):
 BEFUND — was ist der Fall, in ein bis zwei Sätzen
 EVIDENZ — die konkreten Werte mit Station, Charge und Zeitbezug
@@ -280,9 +285,15 @@ Tabelle zu zeigen."""
 
     system = BASIS_SYSTEM + """
 
-Für Traceability-Fragen gilt zusätzlich: Antworte knapp und sachlich. Der
-Fragende will eine belastbare Liste, keine Analyse. Nenne trotzdem, worauf sich
-die Liste stützt."""
+Für Rückverfolgungsfragen gilt zusätzlich:
+* Antworte knapp und sachlich. Der Fragende will eine belastbare Liste, keine
+  Analyse — nenne trotzdem, worauf sie sich stützt.
+* AUFTRAG und CHARGE sind nicht dasselbe. Ein Fertigungsauftrag heißt
+  PO-JAHR-NUMMER und steht als `order_id` an Los und Zelle; eine Charge heißt
+  SLURRY-…, ELEK-…, KAL-… oder ZELL-… und bezeichnet ein Los an einer Station.
+  Wer nach dem Auftrag fragt, will die PO-Nummer sehen, nicht die Charge.
+* Wird eine Liste durch ein Limit gekürzt, sage das ausdrücklich und nenne die
+  Gesamtzahl."""
 
 
 # ---------------------------------------------------------------------------
