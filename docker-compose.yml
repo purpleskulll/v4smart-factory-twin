@@ -73,7 +73,10 @@ services:
     <<: *common
     image: emqx:5.8
     container_name: zellwerk-emqx
-    networks: [backend]
+    networks: [backend, edge]
+    # Broker-Konsole, lokal gebunden. Der MQTT-Port selbst bleibt intern.
+    ports:
+      - "127.0.0.1:${ZW_EMQX_PORT:-18083}:18083"
     environment:
       EMQX_NODE__COOKIE: zellwerk
       # ÄNDERN, sobald der Broker von außen erreichbar ist. Diese Variable
@@ -118,12 +121,14 @@ services:
     <<: *python
     container_name: zellwerk-simfactory
     profiles: ["sim"]
-    networks: [backend]
+    networks: [backend, edge]
     command: ["python", "-m", "simfactory.main"]
     environment:
       <<: *pyenv
       ZW_ERP_URL: http://erp-mock:8000
-    ports: []
+    # Bedienoberfläche und Fault-Injection, lokal gebunden.
+    ports:
+      - "127.0.0.1:${ZW_FACTORY_PORT:-8001}:8001"
     depends_on:
       emqx:
         condition: service_healthy
@@ -200,7 +205,14 @@ services:
     image: grafana/grafana-oss:11.3.0
     container_name: zellwerk-grafana
     profiles: ["obs"]
-    networks: [backend]
+    # `edge` zusätzlich, damit der Port lokal gebunden werden kann: ein
+    # Container, der NUR in einem internal-Netz hängt, kann keine Ports
+    # veröffentlichen — Docker hat dann keine Route aus dem Host-Namensraum.
+    networks: [backend, edge]
+    # An 127.0.0.1 gebunden: erreichbar vom eigenen Rechner, nicht aus dem Netz.
+    # Für öffentlichen Zugriff ist das edge-Profil gedacht.
+    ports:
+      - "127.0.0.1:${ZW_GRAFANA_PORT:-3000}:3000"
     environment:
       # ÄNDERN vor jedem Betrieb, der über den eigenen Rechner hinausgeht.
       # Wirkt NUR beim ersten Start eines frischen Volumes; danach hilft nur
@@ -271,8 +283,11 @@ services:
     <<: *python
     container_name: zellwerk-agents
     profiles: ["ai"]
-    networks: [backend]
+    networks: [backend, edge]
     command: ["uvicorn", "agents.api:app", "--host", "0.0.0.0", "--port", "8010"]
+    # Oberfläche zum Starten der Playbooks, lokal gebunden.
+    ports:
+      - "127.0.0.1:${ZW_AGENTS_PORT:-8010}:8010"
     environment:
       <<: *pyenv
       ZW_LLM_BASE_URL: ${ZW_LLM_BASE_URL:-http://zellwerk-llm:4010}

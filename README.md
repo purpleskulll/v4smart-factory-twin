@@ -16,149 +16,520 @@ Ursache zu **belegen** statt zu vermuten.
 
 ## Inhalt
 
-- [Was man sieht](#was-man-sieht) · [Schnellstart](#schnellstart)
-- [Die sechs Stationen](#die-sechs-stationen) · [Fehlerszenarien](#fehlerszenarien)
-- [Architektur](#architektur) · [Datenmodell](#datenmodell)
-- [Die Werkzeuge der Agenten](#die-werkzeuge-der-agenten) · [Playbooks](#playbooks)
-- [Gemessene Ergebnisse](#gemessene-ergebnisse) · [Tests](#tests)
-- [Konfiguration](#konfiguration) · [Betrieb hinter einem Proxy](#betrieb-hinter-einem-reverse-proxy)
-- [Entwurfsentscheidungen](#entwurfsentscheidungen-die-den-unterschied-machen)
+1. [Voraussetzungen](#1-voraussetzungen)
+2. [Installation Schritt für Schritt](#2-installation-schritt-für-schritt)
+3. [Wo welcher Befehl eingegeben wird](#3-wo-welcher-befehl-eingegeben-wird)
+4. [Die erste Stunde: was wann passiert](#4-die-erste-stunde-was-wann-passiert)
+5. [Zeitraffer für Vorführungen](#5-zeitraffer-für-vorführungen)
+6. [Die Oberflächen](#6-die-oberflächen)
+7. [Fehlerszenarien einspielen](#7-fehlerszenarien-einspielen)
+8. [Die Agenten benutzen](#8-die-agenten-benutzen)
+9. [Die sechs Stationen](#9-die-sechs-stationen)
+10. [Architektur](#10-architektur)
+11. [Datenmodell](#11-datenmodell)
+12. [Die Werkzeuge der Agenten](#12-die-werkzeuge-der-agenten)
+13. [Konfiguration](#13-konfiguration)
+14. [Betrieb hinter einem Reverse-Proxy](#14-betrieb-hinter-einem-reverse-proxy)
+15. [LLM-Zugang](#15-llm-zugang)
+16. [Tests](#16-tests)
+17. [Fehlersuche](#17-fehlersuche)
+18. [Gemessene Ergebnisse](#18-gemessene-ergebnisse)
+19. [Entwurfsentscheidungen](#19-entwurfsentscheidungen)
 
 ---
 
-## Was man sieht
+## 1. Voraussetzungen
 
-Drei Oberflächen, jede mit einem eigenen Zweck:
+| | |
+|---|---|
+| Docker | Version 24 oder neuer, **mit Compose v2** (`docker compose`, nicht `docker-compose`) |
+| Arbeitsspeicher | mindestens 6 GB frei — TimescaleDB, EMQX und Grafana zusammen brauchen etwa 2 GB, der Rest ist Puffer |
+| CPU | 4 Kerne empfohlen; mit 2 läuft es, der Zeitraffer wird dann ungenau |
+| Plattenplatz | etwa 4 GB für die Images, dazu wachsende Messdaten (~250 MB je Betriebstag) |
+| Internetzugang | **nur beim Bauen** (Image-Pull). Im Betrieb braucht kein Dienst Internet außer dem LLM-Zugang |
 
-**Grafana** — drei Dashboards
-- *Linienübersicht*: die Anlage in Betrieb, Sollfenster als gestrichelte Linien
-- *Zellen & Genealogie*: Aufträge mit Fortschritt, Rückverfolgung, und die
-  Tabelle „Auffällige Zellen mit ihrer Herkunft" — Kapazität, Elektrolyt,
-  Porosität und Viskosität nebeneinander
-- *Agenten & Befunde*: was die KI untersucht, was sie vorschlägt, womit sie es belegt
-
-**Musterfabrik** — Kennzahlen der Produktion, Fertigungsaufträge, und die fünf
-Fehlerszenarien als Karten mit Knopf. Jedes mit der Erklärung, an welcher
-Station es sich auswirkt — und das ist nie dieselbe, an der es entsteht.
-
-**Agenten** — Playbooks per Klick starten, Bericht im Browser lesen. Ein Lauf
-dauert ein bis zwei Minuten; die Ergebnisseite lädt sich selbst nach.
-
----
-
-## Schnellstart
-
-Voraussetzungen: Docker mit Compose v2, etwa 4 CPU-Kerne und 6 GB RAM.
+Prüfen, ob Docker passt — **auf dem Rechner, auf dem der Stack laufen soll**:
 
 ```bash
-cp .env.example .env        # für den lokalen Betrieb genügen die Vorgaben
-make up                     # Fabrik + Kern + Dashboards
-make ps                     # alle Dienste gesund?
+docker --version          # erwartet: Docker version 24.x oder höher
+docker compose version    # erwartet: Docker Compose version v2.x
 ```
 
-Nach etwa **50 Minuten** hat die erste Zelle alle sechs Stationen durchlaufen.
-Für Vorführungen lässt sich die Zeit raffen, ohne die Prozesslogik anzufassen:
+Gibt der zweite Befehl „unknown command" aus, ist nur das alte `docker-compose`
+installiert. Dann funktionieren die Befehle in dieser Anleitung nicht — Compose
+v2 nachinstallieren.
+
+---
+
+## 2. Installation Schritt für Schritt
+
+**Alle Befehle in diesem Abschnitt werden im Wurzelverzeichnis des Repos
+eingegeben** — also dort, wo die `docker-compose.yml` liegt.
+
+### Schritt 1 — Repo holen
+
+```bash
+git clone <repo-url> zellwerk
+cd zellwerk
+```
+
+Ab jetzt bleibst du in diesem Verzeichnis. Jeder `docker compose`-Befehl sucht
+die `docker-compose.yml` im aktuellen Verzeichnis; von woanders aufgerufen
+findet er sie nicht.
+
+### Schritt 2 — Konfiguration anlegen
+
+```bash
+cp .env.example .env
+```
+
+Für den lokalen Betrieb sind die Vorgaben ausreichend. Wer den Stack über den
+eigenen Rechner hinaus erreichbar macht, muss mindestens die beiden Passwörter
+ändern — siehe [Konfiguration](#13-konfiguration).
+
+### Schritt 3 — Starten
+
+```bash
+make up
+```
+
+Das entspricht `docker compose --profile sim --profile core --profile obs up -d`
+und startet elf Container. Der erste Aufruf dauert **fünf bis fünfzehn Minuten**,
+weil Images geladen und drei Python-Images gebaut werden. Danach geht es in
+Sekunden.
+
+### Schritt 4 — Prüfen, ob alles läuft
+
+```bash
+make ps
+```
+
+Erwartet werden elf Zeilen. Die Spalte `STATUS` sollte bei `emqx`,
+`timescaledb`, `erp-mock` und `simfactory` **`(healthy)`** zeigen — die übrigen
+haben keine Gesundheitsprüfung und stehen einfach auf `Up`.
+
+Steht dort `(health: starting)`, warte eine Minute: EMQX und TimescaleDB
+brauchen beim ersten Start länger, weil sie ihre Datenverzeichnisse anlegen.
+
+### Schritt 5 — Dashboard öffnen
+
+```
+http://localhost:3000
+```
+
+Anmeldung mit `admin` und dem Passwort aus deiner `.env`
+(`ZW_GRAFANA_PASSWORD`, Vorgabe `zellwerk-demo`).
+
+> **Portkonflikt?** Alle Oberflächen sind an `127.0.0.1` gebunden — erreichbar
+> vom eigenen Rechner, nicht aus dem Netz. Ist einer der Ports schon belegt,
+> ändere ihn in der `.env`:
+>
+> ```bash
+> ZW_GRAFANA_PORT=3001
+> ZW_FACTORY_PORT=8002
+> ZW_AGENTS_PORT=8011
+> ZW_EMQX_PORT=18084
+> ```
+>
+> Danach `docker compose --profile sim --profile core --profile obs up -d --force-recreate`.
+
+---
+
+## 3. Wo welcher Befehl eingegeben wird
+
+Das ist die häufigste Stolperfalle: es gibt **drei verschiedene Orte**, an denen
+Befehle laufen. Jeder Codeblock in dieser Anleitung sagt dazu, welcher gemeint
+ist.
+
+### Ort A — dein Rechner, im Repo-Verzeichnis
+
+Für alles, was den Stack als Ganzes betrifft: starten, stoppen, Logs ansehen.
+Erkennbar an `docker compose …` oder `make …`.
+
+```bash
+cd /pfad/zu/zellwerk     # dort, wo docker-compose.yml liegt
+make ps
+```
+
+### Ort B — in einem laufenden Container
+
+Für alles, was ein einzelner Dienst tun soll: ein Playbook starten, die
+Lastmessung, ein SQL-Kommando. Erkennbar an `docker compose exec <dienst> …`.
+
+```bash
+docker compose exec agents python -m agents.runner triage
+#               ^^^^^^ Dienstname aus der docker-compose.yml
+```
+
+Der Befehl wird **im Container** ausgeführt, aber **von deinem Rechner aus**
+eingegeben — du musst dich nirgends einloggen.
+
+### Ort C — im Browser
+
+Für die Oberflächen. Adressen siehe [Abschnitt 6](#6-die-oberflächen).
+
+---
+
+## 4. Die erste Stunde: was wann passiert
+
+Nach `make up` läuft die Fabrik in **Echtzeit**. Das bedeutet konkret:
+
+| Zeit nach dem Start | Was passiert | Wo sichtbar |
+|---|---|---|
+| sofort | Alle sechs Stationen senden Messwerte im Sekundentakt | Dashboard *Linienübersicht* |
+| nach ~10 min | Das erste Slurry-Los ist fertig gemischt | Fabrik-Oberfläche, Zähler „Chargen" |
+| nach ~20 min | Erstes Elektroden-Los beschichtet | dito |
+| nach ~30 min | Erstes Los kalandriert | dito |
+| nach ~40 min | Die ersten Zellen werden gebaut | Zähler „Zellen gesamt" |
+| nach ~50 min | Erste Zelle vollständig formiert | Zähler „davon in Ordnung" |
+
+**Vorher sind Zellen- und Chargenzähler null — das ist kein Fehler.** Messwerte
+liegen sofort vor, das semantische Modell braucht seine Durchlaufzeit.
+
+Wer nicht warten will, nimmt den Zeitraffer.
+
+---
+
+## 5. Zeitraffer für Vorführungen
+
+**Ort A — dein Rechner, im Repo-Verzeichnis:**
 
 ```bash
 ZW_SPEED=30 docker compose --profile sim up -d --force-recreate simfactory
 ```
 
-Die KI-Schicht braucht einen LLM-Zugang (siehe [LLM-Zugang](#llm-zugang)):
+Was der Befehl macht, Wort für Wort:
+
+| Teil | Bedeutung |
+|---|---|
+| `ZW_SPEED=30` | setzt den Zeitraffer für **diesen einen Aufruf** auf Faktor 30 |
+| `docker compose` | Compose v2 |
+| `--profile sim` | nötig, weil `simfactory` im Profil `sim` liegt; ohne diese Angabe kennt Compose den Dienst nicht |
+| `up -d` | starten, im Hintergrund |
+| `--force-recreate` | den Container **neu erzeugen** — nur so wird die geänderte Variable übernommen. Ein einfaches `restart` genügt **nicht** |
+| `simfactory` | nur diesen einen Dienst, alle anderen laufen weiter |
+
+**Wirkung:** Eine Minute Wanduhrzeit entspricht dann einer halben Stunde
+Fertigung. Die erste vollständige Zelle liegt nach etwa **100 Sekunden** vor
+statt nach 50 Minuten.
+
+**Prüfen, ob es gegriffen hat** (Ort A):
 
 ```bash
-make up-ai
+docker compose exec simfactory printenv ZW_SPEED
+# erwartet: 30
 ```
 
-Ein Fehlerszenario einspielen und beobachten:
+Kommt hier nichts oder `1.0`, wurde der Container nicht neu erzeugt — dann
+`--force-recreate` vergessen.
+
+**Zurück auf Echtzeit** (Ort A):
+
+```bash
+docker compose --profile sim up -d --force-recreate simfactory
+```
+
+Ohne die Variable davor gilt wieder der Wert aus der `.env` beziehungsweise die
+Vorgabe 1.0.
+
+> **Achtung bei der Vorführung:** Der Zeitraffer setzt den Simulator zurück.
+> Chargen und Zellen im Speicher gehen verloren — die bereits in der Datenbank
+> gespeicherten bleiben. Deshalb den Zeitraffer **vor** dem Gespräch einschalten
+> und laufen lassen, nicht mittendrin.
+
+**Dauerhaft in der `.env` setzen** (statt bei jedem Aufruf):
+
+```bash
+# .env
+ZW_SPEED=30
+```
+
+Danach einmal `make up` — dann gilt der Wert für alle künftigen Starts.
+---
+
+## 6. Die Oberflächen
+
+Alle drei sind **Ort C — Browser**. Ohne Reverse-Proxy erreichst du sie über
+`localhost` und den jeweiligen Port; hinter dem Edge-Profil über eigene
+Hostnamen (siehe [Abschnitt 14](#14-betrieb-hinter-einem-reverse-proxy)).
+
+### Grafana — die Messwerte
+
+| | |
+|---|---|
+| Adresse | `http://localhost:3000` (Port über `ZW_GRAFANA_PORT` änderbar) |
+| Anmeldung | `admin` / Wert von `ZW_GRAFANA_PASSWORD` aus deiner `.env` |
+| Startseite | das Dashboard *Linienübersicht* — nicht Grafanas Willkommensseite |
+
+Drei Dashboards, erreichbar oben links über **Dashboards → zellwerk**:
+
+**Linienübersicht** — die Anlage in Betrieb. Sechs Panels: Viskosität am
+Mischer, Streuung am Coater, Porosität am Kalander, Dosiermenge an der
+Befüllung, alle acht Kanaltemperaturen der Formierung, dazu Zellstatus und
+offene Ereignisse. Die gestrichelten Linien sind die Sollgrenzen aus der
+Tabelle `process_window` — dieselbe Quelle, aus der auch die Agenten lesen.
+
+**Zellen & Genealogie** — das semantische Modell. Aufträge mit Fortschritt,
+Zellen nach Status, und die Tabelle *Auffällige Zellen mit ihrer Herkunft*: sie
+zeigt je Zelle Kapazität, Elektrolytmenge, Porosität und Viskosität
+nebeneinander. **Das ist die wichtigste Ansicht für eine Vorführung**, weil man
+daran zeigen kann, warum Genealogie nötig ist: zwei verschiedene Ursachen
+erzeugen dieselbe niedrige Kapazität, und nur diese Spalten trennen sie.
+
+**Agenten & Befunde** — was die KI getan hat. Die Vorschläge mit ihrer
+Begründung, die Werkzeugketten in der Reihenfolge, in der der Agent sie selbst
+gewählt hat, und die Playbook-Läufe.
+
+### Musterfabrik — die Anlage bedienen
+
+| | |
+|---|---|
+| Adresse | `http://localhost:8001` (Port über `ZW_FACTORY_PORT` änderbar) |
+| Anmeldung | keine (nur hinter dem Edge-Profil steht Basic Auth davor) |
+| Aktualisierung | alle 5 Sekunden von selbst |
+
+Zeigt Produktionskennzahlen, die Fertigungsaufträge mit Fortschritt, die
+Warteschlangen zwischen den Stationen — und die fünf Fehlerszenarien als Karten
+mit Knopf.
+
+### Agenten — Untersuchungen starten
+
+| | |
+|---|---|
+| Adresse | `http://localhost:8010` (Port über `ZW_AGENTS_PORT` änderbar) |
+| Anmeldung | keine (nur hinter dem Edge-Profil) |
+| Voraussetzung | Profil `ai` läuft (`make up-ai`) und ein LLM-Zugang ist eingerichtet |
+
+Drei Playbooks als Karten. Ein Klick startet einen Lauf; du landest automatisch
+auf der Ergebnisseite, die sich alle zehn Sekunden selbst nachlädt, bis der
+Bericht fertig ist.
+
+### EMQX-Konsole — der Broker
+
+| | |
+|---|---|
+| Adresse | `http://localhost:18083` (Port über `ZW_EMQX_PORT` änderbar) |
+| Anmeldung | `admin` / Wert von `ZW_EMQX_PASSWORD` aus deiner `.env` |
+
+Zeigt Nachrichtenraten, Verbindungen, Topics und den Zustand des Brokers.
+Nützlich, um zu prüfen, ob Daten fließen: unter *Cluster Overview* sollten bei
+laufender Fabrik etwa 60 Nachrichten je Sekunde eingehen.
+
+---
+
+## 7. Fehlerszenarien einspielen
+
+Es gibt **drei Wege**, dasselbe zu tun. Alle wirken sofort.
+
+### Weg 1 — im Browser (Ort C)
+
+`http://localhost:8001` öffnen, zum Abschnitt *Fehlerszenarien* scrollen, bei
+einem Szenario auf **einspielen** klicken. Die Karte springt auf „läuft seit
+N min". Derselbe Knopf heißt dann **zurücknehmen**.
+
+### Weg 2 — über den Makefile-Kurzbefehl (Ort A)
 
 ```bash
 make fault id=F1
-make state
 ```
 
----
+Das ruft im Hintergrund `curl -X POST http://localhost:8001/faults/F1` auf und
+gibt die Antwort formatiert aus.
 
-## Die sechs Stationen
+### Weg 3 — direkt über die Schnittstelle (Ort A)
 
-Jede Station ist ein eigener OPC-UA-Server auf eigenem Port (4841–4846), Takt
-1 s, Formierung 10 s.
+```bash
+curl -X POST http://localhost:8001/faults/F1     # einspielen
+curl -X DELETE http://localhost:8001/faults/F1   # zurücknehmen
+curl http://localhost:8001/faults                # welche laufen gerade?
+```
 
-| Station | Prozessvariablen (Auswahl) | Sollbereich |
-|---|---|---|
-| `mixer01` Mischen | Viskosität, Feststoffanteil, Temperatur, Mischdauer | 2–6 Pa·s · 45–55 % · 20–30 °C |
-| `coater01` Beschichten | Nassschichtdicke, Streuung, Bahngeschwindigkeit, Trocknertemperatur, Flächengewicht, Haftungsindex | 120–200 µm · 20–60 m/min · 80–130 °C |
-| `calender01` Kalandrieren | Liniendruck, Spaltmaß, Porosität | 300–1500 N/mm · 28–38 % |
-| `assembly01` Wickeln/Stapeln | Zugspannung, Ausrichtungsfehler, Takt, Delaminationen | < 300 µm |
-| `filling01` Elektrolyt | Dosiermenge, Vakuumdruck, Dichtheitsprüfung, Pumpe | 5 g ±1,5 % |
-| `formation01` Formierung | je Kanal: Strom, Spannung, Temperatur, Status, Drosselung | C/10 · 3,0–4,2 V · 25–45 °C |
+### Die fünf Szenarien
 
-Die Parameter sind plausible Lehrbuch-Defaults, ausdrücklich **keine realen
-Firmendaten**.
+| ID | Was passiert | Wo es sichtbar wird | Wie lange bis zur Wirkung |
+|---|---|---|---|
+| **F1** | Viskosität im Mischer steigt über 45 min von 4 auf 7 Pa·s | verlässt nach ~30 min das Sollfenster; Streuung am Coater, Porosität unter Soll, Kapazitätsverlust in der Formierung | ~75 min bis zur ersten Ausschusszelle |
+| **F2** | Trocknertemperatur am Coater zu hoch | Flächengewicht bleibt in Ordnung, Haftung sinkt; Delamination erst in der Assemblierung | ~30 min |
+| **F3** | Ein Formierkanal überhitzt | Kanal 3 steigt über 50 °C; die Edge-Regel drosselt ihn in unter einer Sekunde, Zelle geht in Quarantäne | ~2 min |
+| **F4** | Dosierpumpe gibt 5 % zu wenig Elektrolyt | in der Station praktisch unsichtbar; niedrige Kapazität erst in der Formierung | ~15 min |
+| **F5** | Ein Zykler-Kanal fällt aus | Kanal 6 liefert `quality=bad`; Durchsatzverlust **ohne** Qualitätsproblem | sofort |
 
-**Materialfluss.** Ein Fertigungsauftrag wird per REST aus dem Mock-ERP geholt
-und steuert, unter welcher Nummer der Mischer ansetzt. Von dort wandert die
-Auftragsnummer über jede Fertigungsstufe bis zur Zelle. Der Mischer erzeugt
-Slurry-Lose, der Coater macht daraus Elektroden-Lose, der Kalander verdichtet
-sie, die Assemblierung baut Zellen mit Seriennummern (`ZW-JAHR-LAUFNUMMER`),
-Befüllung und Formierung verarbeiten sie einzeln.
+Die Zeitangaben gelten für **Echtzeit**. Mit `ZW_SPEED=30` durch 30 teilen.
 
-**Die Linie läuft im Fließgleichgewicht:**
-
-| Station | Taktzeit |
-|---|---|
-| Mischer | 10 min je Slurry-Los |
-| Coater | 400 m bei 40 m/min = 10 min |
-| Kalander | 400 m bei 40 m/min = 10 min |
-| Assemblierung | 20 Zellen à 30 s = 10 min |
-| Formierung | 8 Kanäle à 240 s = eine Zelle je 30 s |
-
-Ohne diese Abstimmung staut sich das Material vor der Formierung, und
-auffällige Chargen erreichen sie nie — die Kausalkette wäre dann nicht
-nachweisbar.
-
----
-
-## Fehlerszenarien
-
-Auslösbar über die Oberfläche oder per `POST /faults/{id}`.
-
-| ID | Szenario | Wo es sichtbar wird |
-|---|---|---|
-| F1 | Viskositätsdrift im Mischer | Streuung am Coater → Porosität unter Soll → Kapazitätsverlust in der Formierung |
-| F2 | Trocknertemperatur zu hoch | Haftung sinkt, Delamination erst in der Assemblierung |
-| F3 | Übertemperatur in einem Formierkanal | Ein Kanal > 50 °C, Zelle in Quarantäne, Edge-Regel drosselt |
-| F4 | Elektrolyt-Unterdosierung | Unauffällig bis zur Formierung, dort niedrige Kapazität |
-| F5 | Ausfall eines Zykler-Kanals | `quality=bad`, Durchsatzverlust **ohne** Qualitätsproblem |
-
-**Zwei Paare sind die eigentlichen Prüfsteine:**
+### Warum F1/F4 und F3/F5 die interessanten Paare sind
 
 **F1 und F4** erzeugen dasselbe Endsymptom — zu wenig Kapazität — über
 verschiedene Wege. In der Formierung sind sie nicht unterscheidbar. Nur die
 Genealogie trennt sie: bei F1 liegt die Porosität unter Soll, bei F4 die
-Dosiermenge.
+Dosiermenge. Wer beide gleichzeitig einspielt, bekommt eine Aufgabe, die ein
+einfacher Grenzwertwächter nicht lösen kann.
 
 **F3 und F5** sehen beide nach „Kanal auffällig" aus, verlangen aber
 gegensätzliche Reaktionen. Der überhitzte Kanal liefert *gültige* Werte, die zu
 hoch sind — die Zelle ist geschädigt und gehört in Quarantäne. Der ausgefallene
 Kanal liefert *ungültige* Werte — die Zelle ist in Ordnung und gehört auf einen
-anderen Kanal. Ein Klassifikator, der nur auf Zahlen schaut, verschrottet die
+anderen Kanal. Ein Klassifikator, der nur Zahlen ansieht, verschrottet die
 zweite grundlos.
 
-**Wie ein Szenario endet.** Es läuft, bis es zurückgenommen wird — von allein
-endet keines. Danach sind die **Messwerte sofort normal, die Zellen nicht**:
-Chargen, die den Fehler mitbekommen haben, wandern weiter durch die Linie und
-fallen später trotzdem durch. Bis die letzte betroffene Zelle die Formierung
-verlassen hat, vergehen rund 45 Minuten Simulationszeit. Genau darum geht es:
-Der Fehler ist längst behoben, und der Ausschuss läuft trotzdem noch.
+### Wie ein Szenario endet
+
+**Es endet nie von allein.** Ein Szenario läuft, bis es zurückgenommen wird —
+das ist Absicht, damit eine Vorführung so lange laufen kann, wie sie gebraucht
+wird.
+
+Nach dem Zurücknehmen sind die **Messwerte sofort wieder normal**. Die Zellen
+aber nicht: Chargen, die den Fehler schon mitbekommen haben, wandern weiter
+durch die Linie und fallen später trotzdem durch. Bis die letzte betroffene
+Zelle die Formierung verlassen hat, vergehen rund **45 Minuten Simulationszeit**.
+
+Genau darum geht es bei diesem System: Der Fehler ist längst behoben, und der
+Ausschuss läuft trotzdem noch. Wer die betroffenen Chargen benennen kann, muss
+nicht die ganze Schicht sperren.
+
+**Eine Ausnahme:** Bei F3 greift die Edge-Regel selbst ein und drosselt den
+überhitzten Kanal, ohne dass jemand etwas anklickt. Das Szenario bleibt trotzdem
+aktiv, bis es abgeschaltet wird.
 
 ---
 
-## Architektur
+## 8. Die Agenten benutzen
+
+### Voraussetzung
+
+Die KI-Schicht läuft nicht mit `make up`, sondern braucht das Profil `ai`
+(Ort A):
+
+```bash
+make up-ai
+```
+
+Zusätzlich muss ein LLM-Zugang eingerichtet sein — siehe
+[Abschnitt 15](#15-llm-zugang). Ohne ihn starten die Container, aber jeder
+Playbook-Lauf endet mit einem Fehler.
+
+**Prüfen** (Ort A):
+
+```bash
+docker compose exec agents python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://zellwerk-llm:4010/health')))"
+```
+
+Erwartet wird `'ok': True`. Steht dort `'ok': False`, fehlt das Zugangstoken.
+
+### Weg 1 — im Browser (Ort C)
+
+`http://localhost:8010` öffnen, auf **Untersuchung starten** klicken. Du landest
+auf der Ergebnisseite; sie lädt sich selbst nach, bis der Bericht fertig ist.
+Ein Lauf dauert **ein bis zwei Minuten**.
+
+### Weg 2 — auf der Kommandozeile (Ort B)
+
+```bash
+docker compose exec agents python -m agents.runner triage
+docker compose exec agents python -m agents.runner formierung
+docker compose exec agents python -m agents.runner trace --frage "Welche Zellen stammen aus SLURRY-0003?"
+docker compose exec agents python -m agents.runner pass --serial ZW-2026-000042
+docker compose exec agents python -m agents.runner testfragen
+```
+
+Hier siehst du den Bericht direkt im Terminal. Der Aufruf blockiert, bis der
+Agent fertig ist.
+
+### Was die vier Playbooks tun
+
+| Playbook | Aufgabe | Woran man erkennt, dass es funktioniert |
+|---|---|---|
+| `triage` | Findet die Station, die den Ausschuss verursacht | benennt bei F1 den Mischer, bei F4 die Dosierpumpe — **und schließt die jeweils andere Ursache ausdrücklich aus** |
+| `formierung` | Trennt Anlagen- von Zellproblem | klassifiziert F3 und F5 gegensätzlich: Quarantäne gegen Umlagern |
+| `trace` | Beantwortet eine Frage in natürlicher Sprache | liefert eine Tabelle betroffener Zellen mit Herkunft |
+| `pass` | Erzeugt den Batteriepass einer Zelle | JSON mit vollständiger Genealogie und Prozess-Kennwerten |
+
+### Wie ein Bericht aufgebaut ist
+
+Immer vier Abschnitte:
+
+- **BEFUND** — was der Fall ist, in ein bis zwei Sätzen
+- **EVIDENZ** — die konkreten Werte mit Station, Charge und Zeitbezug
+- **EMPFEHLUNG** — was zu tun ist und warum genau das
+- **KONFIDENZ** — hoch/mittel/niedrig, mit der Angabe, was die Aussage
+  widerlegen oder erhärten würde
+
+Der Agent arbeitet im **Shadow Mode**: er schlägt vor, er führt nichts aus. Sein
+Vorschlag landet im `action_log` und wartet auf einen Menschen.
+
+### Wo die Ergebnisse landen
+
+An drei Stellen — sie gehen also nicht verloren, wenn du das Browserfenster
+schließt:
+
+1. Auf der Ergebnisseite unter `http://localhost:8010/runs/<nummer>`
+2. Im Grafana-Dashboard *Agenten & Befunde*
+3. In der Tabelle `action_log` der Datenbank
+
+Direkt in der Datenbank nachsehen (Ort B):
+
+```bash
+docker compose exec timescaledb psql -U zellwerk -d zellwerk -c \
+  "SELECT ts, tool, begruendung FROM action_log WHERE tool LIKE 'propose%' ORDER BY ts DESC LIMIT 5;"
+```
+
+---
+
+## 9. Die sechs Stationen
+
+Jede Station ist ein eigener OPC-UA-Server auf eigenem Port (4841–4846), Takt
+1 s, Formierung 10 s. Die OPC-UA-Ports sind **nicht veröffentlicht** — der Konnektor erreicht sie
+über das interne Netz. Von außen zugänglich sind nur die vier Oberflächen, und
+auch die nur über `127.0.0.1`.
+
+| Station | Port | Prozessvariablen | Sollbereich |
+|---|---|---|---|
+| `mixer01` Mischen | 4841 | Viskosität, Feststoffanteil, Temperatur, Mischdauer | 2–6 Pa·s · 45–55 % · 20–30 °C |
+| `coater01` Beschichten | 4842 | Nassschichtdicke, Streuung, Bahngeschwindigkeit, Trocknertemperatur, Flächengewicht, Haftungsindex | 120–200 µm · 20–60 m/min · 80–130 °C |
+| `calender01` Kalandrieren | 4843 | Liniendruck, Spaltmaß, Porosität | 300–1500 N/mm · 28–38 % |
+| `assembly01` Wickeln/Stapeln | 4844 | Zugspannung, Ausrichtungsfehler, Takt, Delaminationen | < 300 µm |
+| `filling01` Elektrolyt | 4845 | Dosiermenge, Vakuumdruck, Dichtheitsprüfung, Pumpe | 5 g ±1,5 % |
+| `formation01` Formierung | 4846 | je Kanal: Strom, Spannung, Temperatur, Status, Drosselung | C/10 · 3,0–4,2 V · 25–45 °C |
+
+Die Parameter sind plausible Lehrbuch-Defaults, ausdrücklich **keine realen
+Firmendaten**.
+
+### Materialfluss
+
+Ein Fertigungsauftrag wird beim Start per REST aus dem Mock-ERP geholt und
+steuert, unter welcher Nummer der Mischer ansetzt. Von dort wandert die
+Auftragsnummer über jede Fertigungsstufe bis zur einzelnen Zelle.
+
+```
+Auftrag (PO-JAHR-NUMMER)
+  └─ SLURRY-nnnn   Mischer      10 min je Los
+      └─ ELEK-nnnn   Coater       400 m bei 40 m/min = 10 min
+          └─ KAL-nnnn  Kalander     400 m bei 40 m/min = 10 min
+              └─ ZELL-nnnn Assemblierung  20 Zellen à 30 s = 10 min
+                  └─ ZW-JAHR-nnnnnn   einzelne Zellen
+                       → Befüllung → Formierung (8 Kanäle à 240 s)
+```
+
+**Die Linie läuft im Fließgleichgewicht:** jede Station braucht zehn Minuten je
+Los, und die Formierung schafft mit acht Kanälen genau eine Zelle je 30 Sekunden
+— dasselbe Tempo, in dem die Assemblierung sie baut. Ohne diese Abstimmung
+staut sich das Material vor der Formierung, und auffällige Chargen erreichen sie
+nie. Die Kausalkette wäre dann nicht nachweisbar.
+
+**Zustand ansehen** (Ort A):
+
+```bash
+make state
+# oder:
+curl http://localhost:8001/state | python3 -m json.tool
+```
+---
+
+## 10. Architektur
 
 ```
   AGENTEN — Playbooks: Triage · Formierung · Rückverfolgung · Batteriepass
         │  Shadow Mode: sie schlagen vor, sie führen nicht aus
-        ▼  MCP-Werkzeuge, jeder Aufruf im Audit-Log
+        ▼  Werkzeuge, jeder Aufruf im Audit-Log
   SEMANTISCHE SCHICHT — Anlagen · Aufträge · Lose · Zellen · Genealogie
         │                + Edge-Rule-Engine (deterministisch, < 1 s)
         ▼  SQL
@@ -170,70 +541,138 @@ Der Fehler ist längst behoben, und der Ausschuss läuft trotzdem noch.
   MUSTERFABRIK — 6 OPC-UA-Server + Fault-Injection + Mock-ERP
 ```
 
-**Dienste** (Compose-Profile in Klammern)
+### Die zwölf Dienste
 
-| Dienst | Profil | Rolle |
-|---|---|---|
-| `emqx` | — | MQTT-Broker, Unified Namespace |
-| `timescaledb` | — | Zeitreihen und semantisches Modell |
-| `simfactory` | sim | sechs Stationen, Fault-Injection, Bedienoberfläche |
-| `erp-mock` | sim | Fertigungsaufträge und Stammdaten |
-| `connector` | core | OPC UA → UNS, konfigurationsgetrieben |
-| `ingest` | core | UNS → TimescaleDB, gebündelt |
-| `rules` | core | Edge-Rule-Engine, deterministisch; meldet über `core/events` |
-| `grafana` | obs | drei Dashboards |
-| `mcpserver` | ai | Fabrikmodell als MCP-Werkzeuge |
-| `agents` | ai | Playbooks über HTTP |
-| `zellwerk-llm` | ai | LLM-Zugang, einziger Weg nach draußen |
-| `caddy` | edge | öffentliche Adressen |
+| Dienst | Profil | Rolle | Port (intern) |
+|---|---|---|---|
+| `emqx` | — | MQTT-Broker, Unified Namespace | 1883 intern · 18083 lokal |
+| `timescaledb` | — | Zeitreihen und semantisches Modell | 5432 |
+| `simfactory` | sim | sechs Stationen, Fault-Injection, Bedienoberfläche | 8001 · 4841–4846 |
+| `erp-mock` | sim | Fertigungsaufträge und Stammdaten | 8000 |
+| `connector` | core | OPC UA → UNS, konfigurationsgetrieben | — |
+| `ingest` | core | UNS → TimescaleDB, gebündelt | — |
+| `rules` | core | Edge-Rule-Engine; meldet über `core/events` | — |
+| `grafana` | obs | drei Dashboards | 3000 |
+| `mcpserver` | ai | Fabrikmodell als MCP-Werkzeuge | 8765 |
+| `agents` | ai | Playbooks über HTTP | 8010 |
+| `zellwerk-llm` | ai | LLM-Zugang, einziger Weg nach draußen | 4010 |
+| `caddy` | edge | öffentliche Adressen | 80 · 443 |
 
-Broker und Datenbank tragen **bewusst kein Profil**: mehrere Profile hängen von
+**Broker und Datenbank tragen bewusst kein Profil.** Mehrere Profile hängen von
 ihnen ab, und eine Abhängigkeit über eine Profilgrenze hinweg ist in Compose
-kein gültiges Projekt.
+kein gültiges Projekt — `--profile sim` allein bricht dann mit „depends on
+undefined service emqx" ab.
 
-**Netzentwurf**
+### Profile: was womit startet
+
+| Befehl | Startet |
+|---|---|
+| `make up` | sim + core + obs — die Fabrik läuft und wird sichtbar |
+| `make up-ai` | zusätzlich die KI-Schicht |
+| `docker compose --profile edge up -d caddy` | zusätzlich die öffentlichen Adressen |
+| `make down` | alles anhalten (Daten bleiben) |
+| `make nuke` | alles entfernen **inklusive Daten** |
+
+### Netzentwurf
 
 | Netz | Eigenschaft | Wer hängt dran |
 |---|---|---|
-| `backend` | `internal: true` — kein Internet | alle Dienste |
+| `backend` | `internal: true` — **kein Internet** | alle Dienste |
 | `egress` | normal | ausschließlich `zellwerk-llm` |
 | `edge` | normal, ohne Internetbedarf | ausschließlich `caddy` |
 
-Genau eine Tür nach draußen, und die führt zur Modell-API. Ein Container, der
-*nur* in einem `internal`-Netz hängt, kann übrigens keine Ports veröffentlichen
-— deshalb hat der Edge ein eigenes Netz, obwohl er selbst nichts nach außen
-sendet.
+Genau eine Tür nach draußen, und die führt zur Modell-API. Kein anderer Dienst
+kann versehentlich telefonieren.
+
+Zwei Dinge, die man dabei wissen sollte: Ein Container, der **nur** in einem
+`internal`-Netz hängt, kann keine Ports veröffentlichen — Docker hat dann keine
+Route aus dem Host-Namensraum, und der Container startet klaglos ganz ohne
+Portbindung. Deshalb hat der Edge ein eigenes Netz, obwohl er selbst nichts nach
+außen sendet.
 
 ---
 
-## Datenmodell
+## 11. Datenmodell
 
-| Tabelle | Zweck |
-|---|---|
-| `asset` | Anlagenregister mit OPC-UA-Endpunkt |
-| `production_order` | Fertigungsaufträge aus dem Mock-ERP |
-| `lot` | Charge je Prozessschritt, mit `parent_id`, `order_id` und `traits` |
-| `cell` | Einzelzelle mit Status, Grade, `order_id` und `traits` |
-| `genealogy` | Kanten: Los → Los, Los → Zelle |
-| `measurement` | Hypertable: Zeitreihen mit Qualitätskennzeichen |
-| `event` | Hypertable: Alarme und Ereignisse, entprellt und quittierbar (`packages/core/events`) |
-| `action_log` | Audit: jeder Werkzeugaufruf eines Agenten |
-| `process_window` | Sollbereiche — dieselbe Wahrheit für Werkzeuge und Dashboards |
+Alles in **einer** Datenbank: die Genealogie-Abfragen verbinden Stammdaten mit
+Messwerten, und ein Join über zwei Systeme hinweg wäre der teuerste Teil jeder
+Anfrage.
 
-`traits` trägt die Qualitätsmerkmale, die ein Los an die nächste Stufe
-weitergibt. Dort liegt die Evidenz, auf die sich jede Ursachenaussage stützt.
+| Tabelle | Zweck | Besonderheit |
+|---|---|---|
+| `asset` | Anlagenregister | mit OPC-UA-Endpunkt |
+| `production_order` | Fertigungsaufträge aus dem Mock-ERP | |
+| `lot` | Charge je Prozessschritt | `parent_id` bildet die Kette, `traits` trägt die Merkmale |
+| `cell` | Einzelzelle | `order_id` gespiegelt, damit „welche Zellen gehören zu Auftrag X" ohne rekursiven Durchlauf geht |
+| `genealogy` | Kanten Los→Los und Los→Zelle | |
+| `measurement` | Hypertable, Zeitreihen | mit Qualitätskennzeichen `good`/`bad`/`uncertain` |
+| `event` | Hypertable, Alarme | entprellt, quittierbar |
+| `action_log` | Audit jedes Werkzeugaufrufs | ohne das wäre „Shadow Mode" eine Behauptung |
+| `process_window` | Sollbereiche | dieselbe Wahrheit für Werkzeuge und Dashboards |
 
-**Topic-Baum:** `zellwerk/v1/{site}/{area}/{line}/{station}/{kind}/{name}` mit
-`kind` ∈ `pv` · `state` · `event` · `trace` · `cmd`. Nutzlast immer
+**`traits` ist der Schlüssel zum Verständnis.** Dort stehen die Merkmale, mit
+denen ein Los gefertigt wurde — und die es an die nächste Stufe weitergibt. Ein
+Slurry-Los trägt `viskositaet_pas`, das Elektroden-Los daraus erbt es als
+`vorstufe_viskositaet_pas`, und so weiter bis zur Zelle. **Dort liegt die
+Evidenz, auf die sich jede Ursachenaussage stützt.**
+
+### Selbst in die Datenbank schauen (Ort B)
+
+```bash
+docker compose exec timescaledb psql -U zellwerk -d zellwerk
+```
+
+Danach bist du in der SQL-Konsole. Nützliche Abfragen:
+
+```sql
+-- Zellen nach Status
+SELECT status, count(*) FROM cell GROUP BY status;
+
+-- Genealogie einer Zelle rückwärts bis zur Slurry-Charge
+WITH RECURSIVE pfad AS (
+    SELECT c.serial, l.id AS lot_id, l.station, l.parent_id, l.traits, 0 AS tiefe
+    FROM cell c JOIN lot l ON l.id = c.lot_id
+    WHERE c.serial = 'ZW-2026-000042'
+  UNION ALL
+    SELECT p.serial, l.id, l.station, l.parent_id, l.traits, p.tiefe+1
+    FROM pfad p JOIN lot l ON l.id = p.parent_id
+)
+SELECT tiefe, station, lot_id, traits FROM pfad ORDER BY tiefe;
+
+-- Was hat ein Agent zuletzt vorgeschlagen?
+SELECT ts, tool, begruendung FROM action_log
+WHERE tool LIKE 'propose%' ORDER BY ts DESC LIMIT 3;
+```
+
+Verlassen mit `\q`.
+
+### Topic-Baum
+
+`zellwerk/v1/{site}/{area}/{line}/{station}/{kind}/{name}` mit `kind` ∈
+`pv` · `state` · `event` · `trace` · `cmd`. Nutzlast immer
 `{ts, value, quality, unit}`.
 
+Mitlesen, was gerade fließt (Ort B):
+
+```bash
+docker compose exec ingest python -c "
+import asyncio, aiomqtt, json
+async def main():
+    async with aiomqtt.Client('emqx', 1883) as c:
+        await c.subscribe('zellwerk/v1/#')
+        n = 0
+        async for m in c.messages:
+            print(m.topic, json.loads(m.payload).get('value'))
+            n += 1
+            if n >= 20: break
+asyncio.run(main())"
+```
+
 ---
 
-## Die Werkzeuge der Agenten
+## 12. Die Werkzeuge der Agenten
 
-Alle read-only außer den zwei markierten. Jeder Aufruf landet im `action_log` —
-ohne lückenloses Audit wäre „Shadow Mode" eine Behauptung statt einer
-Eigenschaft.
+Alle read-only außer den zwei markierten. Jeder Aufruf landet im `action_log`.
 
 | Werkzeug | Zweck |
 |---|---|
@@ -252,50 +691,236 @@ Eigenschaft.
 erfolglosen Suche nur eine leere Liste zurückgibt, provoziert Wiederholungen:
 der Aufrufer weiß nicht, ob sein Kriterium falsch war oder ob es nichts zu
 finden gibt. Hier liefert eine leere Antwort mit, was tatsächlich vorhanden ist
-— bei `query_timeseries` etwa die Liste der bekannten Kennzahlen dieser Anlage.
+— `query_timeseries` etwa die Liste der bekannten Kennzahlen dieser Anlage.
 
-Der MCP-Server lässt sich auch direkt an Claude Desktop oder Claude Code
-anbinden:
+### An Claude Desktop oder Claude Code anbinden
 
-```bash
-python -m mcpserver.server          # stdio
-python -m mcpserver.server --http   # SSE, Port 8765
+Der MCP-Server spricht zwei Transporte. Für Claude Desktop (stdio), Eintrag in
+dessen Konfigurationsdatei:
+
+```json
+{
+  "mcpServers": {
+    "zellwerk": {
+      "command": "docker",
+      "args": ["compose", "-f", "/pfad/zu/zellwerk/docker-compose.yml",
+               "exec", "-T", "mcpserver", "python", "-m", "mcpserver.server"]
+    }
+  }
+}
 ```
+
+Für Dienste im selben Netz läuft er zusätzlich über SSE auf Port 8765 — das ist
+die Betriebsart im Container (`--http`).
 
 ---
 
-## Playbooks
+## 13. Konfiguration
 
-Jedes hat einen festen Ablauf, einen klaren Auslöser und ein klares Endartefakt.
-Ausgabe immer: **Befund, Evidenz, Empfehlung, Konfidenz**.
+Alles in `.env` im Wurzelverzeichnis. Nach jeder Änderung müssen die betroffenen
+Container **neu erzeugt** werden (Ort A):
 
-| Playbook | Aufgabe | Akzeptanzkriterium |
+```bash
+docker compose --profile sim --profile core --profile obs up -d --force-recreate
+```
+
+| Variable | Vorgabe | Bedeutung |
 |---|---|---|
-| Ausschuss-Triage | verursachende Station finden | benennt bei F1 und F4 die richtige Wurzel |
-| Formierungs-Anomalie | Anlagen- von Zellproblem trennen | klassifiziert F3 und F5 gegensätzlich |
-| Rückverfolgung | Frage in natürlicher Sprache | beantwortet die Testfragen aus `tests/trace_questions.yaml` |
-| Batteriepass | JSON je Zelle | Demo-Subset, vollständige Genealogie |
+| `ZW_DB_PASSWORD` | `zellwerk` | Datenbankpasswort |
+| `ZW_GRAFANA_PASSWORD` | `zellwerk-demo` | Grafana-Anmeldung, Benutzer `admin` |
+| `ZW_EMQX_PASSWORD` | `zellwerk-demo` | EMQX-Konsole, Benutzer `admin` |
+| `ZW_SITE` | `werk1` | Wurzel des Topic-Baums |
+| `ZW_TICK_S` | `1.0` | Takt der Fabrik in Sekunden |
+| `ZW_SPEED` | `1.0` | Zeitraffer; 30 = eine Minute entspricht einer halben Stunde |
+| `ZW_MODEL` | `claude-haiku-4-5-20251001` | Modell für die Agenten |
+| `ZW_LLM_BASE_URL` | `http://zellwerk-llm:4010` | Basis-URL des LLM-Zugangs |
+| `ZW_LIVE_ACTIONS` | `false` | ausführende Aktionen; im MVP bewusst aus |
+| `ZW_MAX_RUNDEN` | `16` | Rundenlimit je Playbook-Lauf |
 
-Aufrufbar über die Weboberfläche oder auf der Kommandozeile:
+### Die wichtigste Falle: Passwörter wirken nur beim ersten Start
+
+`ZW_GRAFANA_PASSWORD` und `ZW_EMQX_PASSWORD` werden **nur beim allerersten Start
+eines frischen Volumes** ausgewertet. Besteht das Volume bereits, kommt der
+Container sauber mit gesetzter Variable hoch — und es gilt trotzdem das alte
+Passwort. Am laufenden System (Ort B):
 
 ```bash
-docker compose exec agents python -m agents.runner triage
-docker compose exec agents python -m agents.runner formierung
-docker compose exec agents python -m agents.runner trace --frage "…"
-docker compose exec agents python -m agents.runner pass --serial ZW-2026-000042
-docker compose exec agents python -m agents.runner testfragen
+docker compose exec grafana grafana cli admin reset-admin-password <neues>
+docker compose exec emqx emqx ctl admins passwd admin <neues>
 ```
 
-Zwei Leitplanken stehen in jedem System-Prompt: **keine Behauptung ohne Beleg**
-(ein Agent, der eine Ursache nennt, ohne den Messwert zu zeigen, ist wertlos —
-niemand sperrt eine Charge auf ein Bauchgefühl hin) und **Shadow Mode** (der
-Abschluss ist ein Vorschlag, nie eine Ausführung).
+### Die zweite Falle: `ZW_SPEED` muss durchgereicht werden
+
+Der Zeitraffer steht in der `environment`-Sektion des Dienstes. Fehlt dort der
+Eintrag, erreicht ein `ZW_SPEED=30 docker compose up` den Container **nicht** —
+und die Fabrik läuft weiter in Echtzeit, ohne jede Fehlermeldung. In diesem Repo
+ist der Eintrag gesetzt; wer die Compose-Datei anpasst, sollte ihn nicht
+entfernen.
 
 ---
 
-## Gemessene Ergebnisse
+## 14. Betrieb hinter einem Reverse-Proxy
 
-Alles aus echten Läufen, jeweils mit dem Weg, auf dem es gemessen wurde:
+Das Profil `edge` startet einen Caddy, der die Dienste unter eigenen Hostnamen
+ausliefert.
+
+**Schritt 1 — Adressen in der `.env` eintragen:**
+
+```bash
+ZELLWERK_HOST=dashboard.example.com
+ZW_AGENTS_HOST=agenten.example.com
+ZW_FACTORY_HOST=fabrik.example.com
+ZW_CONSOLE_HOST=broker.example.com
+ZW_GRAFANA_ROOT_URL=https://dashboard.example.com
+ZW_GRAFANA_DOMAIN=dashboard.example.com
+BASIC_AUTH_USER=benutzername
+BASIC_AUTH_HASH=$2a$14$...
+```
+
+Den Hash erzeugen (Ort A):
+
+```bash
+docker run --rm caddy:2.8-alpine caddy hash-password --plaintext 'DEIN_PASSWORT'
+```
+
+> **Achtung bei `$` im Hash:** In einer `.env`-Datei, die Compose interpretiert,
+> müssen `$` als `$$` geschrieben werden. Sonst kürzt Compose den Hash
+> stillschweigend und jede Anmeldung scheitert mit 401 — bei korrektem Passwort.
+
+**Schritt 2 — starten:**
+
+```bash
+docker compose --profile edge up -d caddy
+```
+
+### Was dabei zu beachten ist
+
+Alle Site-Adressen im `Caddyfile` tragen das Präfix **`http://`**. Das ist
+Absicht: TLS terminiert der *vorgelagerte* Proxy. Ohne dieses Präfix leitet
+Caddy jede Anfrage mit 308 auf https um, und die beiden Proxys laufen im Kreis.
+
+**Grafana und EMQX stehen NICHT hinter Basic Auth.** Beide bringen ein eigenes
+Login mit und beantworten nicht angemeldete Aufrufe selbst mit `401` und
+`WWW-Authenticate`. Steht davor noch Basic Auth, hält der Browser das für eine
+erneute Aufforderung und zeigt den Anmeldedialog endlos — eine Schleife, die nur
+mit Abbruch und 401 endet. Musterfabrik und Agenten haben kein eigenes Login und
+stehen deshalb dahinter.
+
+Grafana braucht außerdem `GF_SERVER_ROOT_URL` mit der öffentlichen Adresse,
+sonst zeigen Weiterleitungen nach dem Login auf den internen Containernamen.
+
+---
+
+## 15. LLM-Zugang
+
+Die Agenten sprechen nicht direkt mit einer Modell-API, sondern über den Dienst
+`zellwerk-llm`. Er stellt `POST /v1/messages` im Anthropic-Format bereit, sodass
+das offizielle SDK unverändert benutzbar bleibt:
+
+```python
+from anthropic import Anthropic
+client = Anthropic(base_url=os.environ["ZW_LLM_BASE_URL"], api_key="unused")
+```
+
+Der Dienst erwartet ein Zugangstoken unter `/creds/creds.json` im Format:
+
+```json
+{"claudeAiOauth": {"accessToken": "...", "expiresAt": 1786580000000}}
+```
+
+**Er erneuert das Token niemals selbst.** Das ist keine Stilfrage: eine
+Erneuerung liefert ein neues Refresh-Token und macht das alte serverseitig
+ungültig. Ein zweiter Prozess, der dasselbe Token erneuert, legt damit den
+ersten lahm. Wer diesen Dienst nachbaut, sollte diese Eigenschaft beibehalten.
+
+Wie das Token in den Container gelangt, hängt von der Umgebung ab und ist
+bewusst nicht Teil dieses Repos. Solange keins vorliegt, meldet `/health`
+ehrlich rot:
+
+```bash
+docker compose exec zellwerk-llm python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://127.0.0.1:4010/health')))"
+```
+
+Alternativ lässt sich `ZW_LLM_BASE_URL` auf einen beliebigen anderen
+Anthropic-kompatiblen Endpunkt zeigen — dann wird `zellwerk-llm` nicht
+gebraucht.
+
+---
+
+## 16. Tests
+
+Die Tests laufen **ohne Docker**, offline in Simulationszeit, ohne Broker und
+ohne Datenbank. **Ort A — im Repo-Verzeichnis:**
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python pytest pytest-asyncio pyyaml ruff
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m ruff check packages/ tests/ data/
+```
+
+Erwartet: **19 bestanden**, ruff ohne Beanstandung.
+
+### Welche Tests warum wichtig sind
+
+`test_f1_pflanzt_sich_ueber_das_material_bis_zur_kapazitaet_fort` prüft jedes
+Glied der Kausalkette einzeln. **Fällt er durch, hat der Diagnose-Agent später
+nichts zu finden** — dann sind die sechs Stationen nur unabhängige
+Zufallsgeneratoren.
+
+`test_f4_senkt_kapazitaet_ohne_die_porositaet_anzufassen` schlägt fehl, sobald
+F4 die Porosität mitzieht. Dann wäre es nicht mehr von F1 unterscheidbar, und
+die Triage-Aufgabe wäre trivial statt echt.
+
+`test_normalbetrieb_produziert_gute_zellen` stellt sicher, dass ohne Fehler auch
+kein Ausschuss entsteht — sonst wären alle Alarme wertlos.
+
+### Lastmessung gegen den laufenden Stack (Ort B)
+
+```bash
+docker compose exec ingest python -m tests.load.ingest_load --rate 5000 --sekunden 30 --aufraeumen
+```
+
+Misst, wie viele Werte je Sekunde tatsächlich in der Datenbank ankommen — nicht,
+wie viele gesendet wurden. Das Skript meldet außerdem, wenn es selbst der
+Flaschenhals war, statt seine eigene Grenze als Ergebnis auszugeben.
+
+---
+
+## 17. Fehlersuche
+
+| Symptom | Ursache | Abhilfe |
+|---|---|---|
+| Zellen- und Chargenzähler bleiben null | normal in der ersten Stunde — die Durchlaufzeit beträgt ~50 min | warten oder Zeitraffer einschalten |
+| `make up` bricht mit „depends on undefined service" ab | ein Profil wurde einzeln gestartet, dessen Abhängigkeit in einem anderen liegt | `make up` benutzt alle nötigen Profile |
+| Grafana zeigt „Welcome to Grafana" statt des Dashboards | `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` fehlt | ist in diesem Repo gesetzt; nach eigenen Änderungen prüfen |
+| Grafana-Panels zeigen „No data" | Datenquelle kann sich nicht anmelden | `ZW_DB_PASSWORD` muss **auch in der Grafana-Umgebung** stehen, nicht nur in der von Compose |
+| Anmeldung an Grafana/EMQX scheitert trotz richtigem Passwort | Variable wirkt nur beim ersten Start eines frischen Volumes | Passwort per CLI setzen, siehe [Abschnitt 13](#13-konfiguration) |
+| Endlose Anmeldeaufforderung im Browser | Basic Auth vor einem Dienst mit eigenem Login | Basic Auth für diesen Host entfernen |
+| Zeitraffer wirkt nicht | Container wurde nicht neu erzeugt | `--force-recreate` verwenden und mit `printenv ZW_SPEED` prüfen |
+| Agenten-Lauf endet sofort mit Fehler | kein LLM-Zugang | `/health` des LLM-Dienstes prüfen |
+| Messwerte kommen als `null` an | Konnektor hat die Verbindung verloren | Logs ansehen: `docker compose logs connector` |
+
+### Logs ansehen (Ort A)
+
+```bash
+docker compose logs -f simfactory     # einen Dienst verfolgen
+docker compose logs --tail=50 rules   # letzte 50 Zeilen
+make logs s=ingest                    # Kurzform
+```
+
+### Alles zurücksetzen (Ort A)
+
+```bash
+make nuke     # entfernt Container UND Volumes — alle Daten weg
+make up       # frisch starten
+```
+
+---
+
+## 18. Gemessene Ergebnisse
+
+Alles aus echten Läufen:
 
 | | |
 |---|---|
@@ -306,111 +931,12 @@ Alles aus echten Läufen, jeweils mit dem Weg, auf dem es gemessen wurde:
 | Fließgleichgewicht | vier Stunden Normalbetrieb, alle Warteschlangen bei 0 |
 | Ingest unter Last | 99.990 Werte in 20 s = 4999/s, **0 % Verlust** (der Lastgenerator selbst erreichte 4999/s — die Obergrenze des Schreibpfads wurde damit nicht ermittelt) |
 | Ausschuss-Triage bei F4 | 8 Runden, 13 Werkzeuge; Dosierpumpe benannt, Cpk −0,141 als Beleg, Mischer/Coater/Kalander namentlich ausgeschlossen |
-| F3 gegen F5 | korrekt gegensätzlich klassifiziert: Quarantäne vs. Umlagern |
+| F3 gegen F5 | korrekt gegensätzlich klassifiziert: Quarantäne gegen Umlagern |
 | Batteriepass | 16 Prozess-Kennwerte über vier Fertigungsstufen |
 
 ---
 
-## Tests
-
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python pytest pytest-asyncio pyyaml ruff
-.venv/bin/python -m pytest tests/ -q
-.venv/bin/python -m ruff check packages/ tests/ data/
-```
-
-Die Tests laufen offline in Simulationszeit, ohne Broker und ohne Datenbank.
-
-Der wichtigste ist
-`test_f1_pflanzt_sich_ueber_das_material_bis_zur_kapazitaet_fort`: er prüft
-jedes Glied der Kette einzeln. Fällt er durch, hat der Diagnose-Agent später
-nichts zu finden — dann sind die sechs Stationen nur unabhängige
-Zufallsgeneratoren.
-
-Ebenso bewusst gesetzt: `test_f4_senkt_kapazitaet_ohne_die_porositaet_anzufassen`
-schlägt fehl, sobald F4 die Porosität mitzieht. Dann wäre es nicht mehr von F1
-unterscheidbar, und die Triage-Aufgabe wäre trivial statt echt.
-
-Lastmessung gegen den laufenden Stack:
-
-```bash
-docker compose exec ingest python -m tests.load.ingest_load --rate 5000 --sekunden 30
-```
-
----
-
-## Konfiguration
-
-Alles in `.env` (siehe `.env.example`): Zugangsdaten, Standort, Takt und
-Zeitraffer, Modellwahl, öffentliche Adressen.
-
-**Wichtig zu wissen:** `ZW_GRAFANA_PASSWORD` und `ZW_EMQX_PASSWORD` wirken **nur
-beim ersten Start eines frischen Volumes**. Besteht das Volume bereits, kommt
-der Container sauber mit gesetzter Variable hoch — und es gilt trotzdem das alte
-Passwort. An einer bestehenden Installation:
-
-```bash
-docker compose exec grafana grafana cli admin reset-admin-password <neues>
-docker compose exec emqx emqx ctl admins passwd admin <neues>
-```
-
-Der Zeitraffer `ZW_SPEED` muss in der `environment`-Sektion des Dienstes stehen
-— ohne Eintrag erreicht ein `ZW_SPEED=30 docker compose up` den Container nicht,
-und die Fabrik läuft weiter in Echtzeit, ohne jede Fehlermeldung.
-
----
-
-## Betrieb hinter einem Reverse-Proxy
-
-Das `edge`-Profil startet einen Caddy, der die Dienste unter eigenen Hostnamen
-ausliefert. Alle Site-Adressen im `Caddyfile` tragen bewusst das Präfix
-`http://`: TLS terminiert der **vorgelagerte** Proxy. Ohne dieses Präfix leitet
-Caddy jede Anfrage mit 308 auf https um, und die beiden Proxys laufen im Kreis.
-
-**Grafana und EMQX stehen NICHT hinter Basic Auth.** Beide bringen ein eigenes
-Login mit und beantworten nicht angemeldete Aufrufe selbst mit `401` und
-`WWW-Authenticate`. Steht davor noch Basic Auth, hält der Browser das für eine
-erneute Aufforderung und zeigt den Anmeldedialog endlos — eine Schleife, die nur
-mit Abbruch und 401 endet.
-
-Grafana braucht außerdem `GF_SERVER_ROOT_URL` mit der öffentlichen Adresse,
-sonst zeigen Weiterleitungen nach dem Login auf den internen Containernamen.
-
-Standardmäßig zeigt Grafana nach dem Login seine Willkommensseite — mit „Add
-your first data source". Das sieht aus wie eine leere Neuinstallation, obwohl
-alles provisioniert ist. `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` setzt
-stattdessen das Linien-Dashboard als Startseite.
-
----
-
-## LLM-Zugang
-
-Die Agenten sprechen nicht direkt mit einer Modell-API, sondern über den Dienst
-`zellwerk-llm`. Er stellt `POST /v1/messages` im Anthropic-Format bereit, sodass
-das offizielle SDK unverändert benutzbar bleibt — es zeigt lediglich auf eine
-andere Basis-URL:
-
-```python
-from anthropic import Anthropic
-client = Anthropic(base_url=os.environ["ZW_LLM_BASE_URL"], api_key="unused")
-```
-
-Der Dienst ist ein **rein passiver Leser**: er benutzt ein Zugangstoken, das ihm
-von außen bereitgestellt wird, und erneuert es **niemals selbst**. Der Grund ist
-keine Stilfrage — eine Erneuerung liefert ein neues Refresh-Token und macht das
-alte serverseitig ungültig. Ein zweiter Prozess, der dasselbe Token erneuert,
-legt damit den ersten lahm. Wer diesen Dienst nachbaut, sollte diese Eigenschaft
-beibehalten.
-
-Wie das Token in den Container kommt, ist bewusst nicht Teil dieses Repos: das
-hängt von der jeweiligen Umgebung ab. Der Dienst erwartet es unter
-`/creds/creds.json` im Format `{"claudeAiOauth": {"accessToken": …,
-"expiresAt": …}}` und meldet über `/health` ehrlich rot, solange keins vorliegt.
-
----
-
-## Entwurfsentscheidungen, die den Unterschied machen
+## 19. Entwurfsentscheidungen
 
 **Der Konnektor weiß nichts über Batterien.** Was er abonniert und wohin er
 publiziert, steht vollständig in `packages/connector/config.yaml`. Im echten
@@ -431,10 +957,7 @@ Akzeptanzkriterium des Formierungs-Playbooks.
 **Alarme werden entprellt** (`packages/core/events`). Ein Alarmsystem, das jede
 Grenzverletzung einzeln meldet, erzeugt bei einem schwankenden Messwert hunderte
 Einträge — und wird deshalb ignoriert. Genau dann ist es wertlos, wenn es
-gebraucht wird. Die Ereignisschicht zählt Wiederholungen am bestehenden Eintrag
-hoch statt neue Zeilen anzulegen, hält den auslösenden Messwert als Kontext fest
-und kennt einen Lebenszyklus: `get_active_alarms` zeigt nur, was noch offen
-ist.
+gebraucht wird.
 
 **Zeitstempel sind Wanduhrzeit, auch im Zeitraffer.** Trüge ein Los seine
 Simulationszeit, liefen die Achsen auseinander, und die Abfrage „Prozesswerte im
@@ -444,14 +967,10 @@ Fertigungszeitraum dieses Loses" fände nichts.
 fehlertolerant: fällt das ERP aus, produziert die Fabrik ohne Auftragsbezug
 weiter. Der Ausfall wird protokolliert, nicht verschluckt.
 
-`docs/decisions.md` hält fest, wo und warum die Umsetzung von der Spezifikation
-abweicht — unter anderem, dass die Formierungs-Templates synthetisch aus
-veröffentlichten Kennwerten erzeugt und nicht aus einem Messdatensatz abgeleitet
-werden. Solche Abweichungen gehören dokumentiert, nicht stillschweigend gemacht.
-
-`docs/demo-drehbuch.md` beschreibt einen vollständigen Vorführungsablauf in fünf
-Akten, mit den Sätzen dazu — und einem Abschnitt „Was man nicht behaupten
-sollte".
+Weiterführend:
+- `docs/decisions.md` — wo und warum die Umsetzung von der Spezifikation abweicht
+- `docs/demo-drehbuch.md` — Vorführungsablauf in fünf Akten, mit einem Abschnitt
+  „Was man nicht behaupten sollte"
 
 ---
 
