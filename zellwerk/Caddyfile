@@ -1,0 +1,73 @@
+# ============================================================================
+# zellwerk — Edge / öffentliche URLs
+# ----------------------------------------------------------------------------
+# Dieser Caddy hat den Platz des vorherigen Projekts übernommen: er belegt in
+# der inneren Engine die Ports 80/443, die der Host auf 8090/8453 abbildet.
+#
+# `http://` ist Absicht: TLS terminiert der VORGELAGERTE Caddy des Servers
+# (Zertifikat via DNS-01) und reicht per HTTP weiter. Ohne das Präfix würde
+# dieser Caddy jede Anfrage mit 308 auf https umleiten — die beiden Proxys
+# liefen dann im Kreis.
+#
+# Kein Basic Auth vor Grafana: es bringt ein eigenes Login mit, und zwei
+# hintereinandergeschaltete Anmeldungen sind keine doppelte Sicherheit,
+# sondern doppelte Reibung. Die Dienste OHNE eigenes Login stehen dagegen
+# hinter `import auth`.
+# ============================================================================
+
+{
+	email {$ACME_EMAIL}
+}
+
+(auth) {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+}
+
+(proxy_header) {
+	header_up Host {host}
+	header_up X-Real-IP {remote_host}
+	header_up X-Forwarded-For {remote_host}
+}
+
+# --- Hauptadresse: das Linien-Dashboard ------------------------------------
+http://{$ZELLWERK_HOST} {
+	encode zstd gzip
+	reverse_proxy grafana:3000 {
+		import proxy_header
+	}
+}
+
+# --- Die bisherige Adresse zeigt auf dasselbe Dashboard ---------------------
+# Der alte Digital Twin lief hier. Statt ins Leere zu laufen, führt die
+# gewohnte Adresse jetzt auf zellwerk — wer sie im Lesezeichen hat, landet
+# weiter an einer sinnvollen Stelle.
+http://{$LEGACY_HOST} {
+	encode zstd gzip
+	reverse_proxy grafana:3000 {
+		import proxy_header
+	}
+}
+
+# --- Broker-Oberfläche (EMQX) ----------------------------------------------
+# Eigenes Login vorhanden, aber zusätzlich hinter Basic Auth: die
+# Broker-Konsole erlaubt Eingriffe in den Datenfluss und ist nichts, was
+# offen im Netz stehen sollte.
+http://{$CONSOLE_HOST} {
+	import auth
+	encode zstd gzip
+	reverse_proxy emqx:18083 {
+		import proxy_header
+	}
+}
+
+# --- Musterfabrik: Zustand und Fault-Injection ------------------------------
+# Hinter Basic Auth, denn hierüber lassen sich Fehlerszenarien auslösen.
+http://{$FACTORY_HOST} {
+	import auth
+	encode zstd gzip
+	reverse_proxy simfactory:8001 {
+		import proxy_header
+	}
+}

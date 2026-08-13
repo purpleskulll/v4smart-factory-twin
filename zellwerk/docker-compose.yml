@@ -46,12 +46,21 @@ x-python: &python
 networks:
   backend:
     internal: true
+  # Ausgehend: ausschließlich für den LLM-Zugang.
   egress: {}
+  # Eingehend: für den Edge. Ein Container, der NUR in einem internal-Netz
+  # hängt, kann keine Ports veröffentlichen — Docker hat dann keine Route aus
+  # dem Host-Namespace, und der Container startet klaglos ohne Portbindung.
+  # Deshalb ein eigenes, nicht-internes Netz statt `egress` mitzubenutzen:
+  # der Edge soll erreichbar sein, aber selbst nicht ins Internet können.
+  edge: {}
 
 volumes:
   timescale-data:
   emqx-data:
   grafana-data:
+  caddy-data:
+  caddy-config:
 
 services:
 
@@ -249,6 +258,39 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+
+  # ------------------------------------------------------------------ Edge --
+  # Öffentliche URLs. Belegt in der inneren Engine 80/443 — dieselben Ports,
+  # die der Host auf 8090/8453 abbildet. Hat den Platz des vorherigen Projekts
+  # übernommen, weshalb auch dessen bisherige Adresse hier landet.
+  #
+  # `edge`-Profil: `make up` lässt den Stack rein intern laufen, erst
+  # `--profile edge` macht ihn öffentlich.
+  caddy:
+    <<: *common
+    image: caddy:2.8-alpine
+    container_name: zellwerk-caddy
+    profiles: ["edge"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ZELLWERK_HOST: ${ZELLWERK_HOST:-}
+      LEGACY_HOST: ${LEGACY_HOST:-}
+      CONSOLE_HOST: ${ZW_CONSOLE_HOST:-}
+      FACTORY_HOST: ${ZW_FACTORY_HOST:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    # `edge` für die Erreichbarkeit von außen, `backend` um die Dienste zu
+    # erreichen. NICHT `egress` — der Edge soll keine ausgehende Verbindung
+    # aufbauen können; diese Tür bleibt dem LLM-Zugang vorbehalten.
+    networks: [backend, edge]
+    mem_limit: 256m
 
   # Der EINZIGE Dienst mit einem Bein im egress-Netz. Siehe decisions.md D1/D3.
   zellwerk-llm:
