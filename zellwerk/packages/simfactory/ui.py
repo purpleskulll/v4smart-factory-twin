@@ -107,11 +107,15 @@ def startseite(zustand: dict, aktive_fehler: list[str], agenten_adresse: str = "
     else:
         auftragstabelle = '<p class="unterzeile">Keine Aufträge übernommen.</p>'
 
+    laufzeiten = z.get("fehler_laufzeit_min", {})
     fehlerhtml = ""
     for kennung, titel, beschreibung in FEHLER:
         ist_aktiv = kennung in aktive_fehler
-        marke = ('<span class="marke schlecht">läuft</span>' if ist_aktiv
-                 else '<span class="marke gut">aus</span>')
+        if ist_aktiv:
+            dauer = laufzeiten.get(kennung, 0)
+            marke = f'<span class="marke schlecht">läuft seit {dauer:.0f} min</span>'
+        else:
+            marke = '<span class="marke gut">aus</span>'
         aktion = "zurücknehmen" if ist_aktiv else "einspielen"
         klasse = " aktiv" if ist_aktiv else ""
         fehlerhtml += f"""
@@ -149,6 +153,25 @@ def startseite(zustand: dict, aktive_fehler: list[str], agenten_adresse: str = "
 <h2>Fehlerszenarien</h2>
 <p class="unterzeile">Jedes Szenario wirkt sich an einer anderen Station aus als dort,
 wo es entsteht — genau das macht die Ursachensuche interessant.</p>
+
+<div class="karte" style="margin-bottom:1rem">
+  <h3>Wie ein Szenario wieder verschwindet</h3>
+  <p>Ein Szenario läuft, bis es <b>hier zurückgenommen</b> wird — von allein
+  endet keines. Das ist Absicht: eine Vorführung soll so lange laufen, wie sie
+  gebraucht wird.</p>
+  <p>Nach dem Zurücknehmen sind die <b>Messwerte sofort wieder normal</b>. Die
+  Zellen aber nicht: Chargen, die den Fehler schon mitbekommen haben, wandern
+  weiter durch die Linie und fallen später trotzdem durch. Bis die letzte
+  betroffene Zelle die Formierung verlassen hat, vergehen rund
+  <b>45 Minuten Simulationszeit</b> — Mischer, Coater und Kalander brauchen je
+  zehn Minuten, Assemblierung zehn, die Formierung vier.</p>
+  <p>Genau darum geht es bei diesem System: Der Fehler ist längst behoben, und
+  der Ausschuss läuft trotzdem noch. Wer die betroffenen Chargen benennen kann,
+  muss nicht die ganze Schicht sperren.</p>
+  <p><b>Eine Ausnahme:</b> Bei F3 greift die Edge-Regel selbst ein und drosselt
+  den überhitzten Kanal in unter einer Sekunde — ohne dass jemand etwas anklickt.
+  Das Szenario bleibt trotzdem aktiv, bis es hier abgeschaltet wird.</p>
+</div>
 <div class="fehler">{fehlerhtml}</div>
 
 <h2>Warteschlangen zwischen den Stationen</h2>

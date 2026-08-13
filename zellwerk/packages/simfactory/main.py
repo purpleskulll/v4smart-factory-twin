@@ -262,7 +262,8 @@ app = FastAPI(title="zellwerk Musterfabrik", lifespan=lifespan)
 async def ui() -> str:
     """Bedienoberfläche. Ohne sie lief ein Aufruf der Adresse auf 404 —
     für jeden, der die Seite öffnet, sieht das nach einem kaputten Dienst aus."""
-    return startseite(await state(),
+    zustand = await state()
+    return startseite(zustand,
                       sorted({f for st in SIM.factory.stations for f in st.faults}),
                       AGENTEN_URL)
 
@@ -309,6 +310,13 @@ async def state() -> dict:
         "zellen_nach_status": {
             status: sum(1 for c in f.genealogy.cells.values() if c.status == status)
             for status in ("in_prozess", "ok", "ausschuss", "quarantaene")
+        },
+        # Wie lange läuft ein Szenario schon? Ohne diese Angabe lässt sich auf
+        # der Oberfläche nicht sagen, wie weit der Fehler schon durch die Linie
+        # gewandert ist — und genau das entscheidet, wie lange die Erholung dauert.
+        "fehler_laufzeit_min": {
+            f: round(st.fault_minutes(f, SIM.factory.now), 1)
+            for st in SIM.factory.stations for f in st.faults
         },
         "auftraege": SIM.erp.summary(),
         "erp_fehler": SIM.erp.last_error,

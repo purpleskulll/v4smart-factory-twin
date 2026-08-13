@@ -77,17 +77,36 @@ async def start() -> str:
             continue
         titel, text = beschreibungen.get(k, (k, ""))
         if k == "trace":
-            feld = ("width:100%;padding:.5rem;margin-bottom:.5rem;background:#0d0e12;"
-                    "border:1px solid #2f3b52;border-radius:6px;color:#dcdde0;font:inherit")
-            zeilen += f'''<div class="karte"><h3>{titel}</h3><p>{text}</p>
+            beispiel = ("Zum Beispiel:&#10;"
+                        "Welche Zellen stammen aus Charge SLURRY-0003 "
+                        "und wo sind sie jetzt?&#10;"
+                        "Welche Formierkanäle liefern gerade keine gültigen Messwerte?")
+            feld = ("width:100%;padding:.7rem .8rem;margin-bottom:.6rem;"
+                    "background:#0d0e12;border:1px solid #2f3b52;border-radius:6px;"
+                    "color:#dcdde0;font:inherit;font-size:.95rem;min-height:4.5rem;"
+                    "resize:vertical;line-height:1.5")
+            # Eigene Zeile im Raster: eine Frage braucht Platz zum Tippen und
+            # zum Lesen. Ein einzeiliges Feld, in dem der Satz wegrutscht, lädt
+            # nicht zum Ausprobieren ein.
+            zeilen += f'''<div class="karte" style="grid-column:1/-1">
+              <h3>{titel}</h3><p>{text}</p>
               <form method="get" action="/playbook/trace">
-                <input name="frage" style="{feld}"
-                       placeholder="z. B. Welche Zellen stammen aus SLURRY-0003?">
-                <button type="submit">starten</button>
-              </form></div>'''
+                <textarea name="frage" style="{feld}" rows="3"
+                  placeholder="{beispiel}"></textarea>
+                <button type="submit">Frage stellen</button>
+              </form>
+              <p style="color:#8b9096;font-size:.85rem;margin-top:.6rem">
+                Die Antwort erscheint nach ein bis zwei Minuten auf einer eigenen
+                Seite — du wirst automatisch dorthin geleitet und sie lädt sich
+                selbst nach, bis der Agent fertig ist.</p>
+            </div>'''
         else:
-            zeilen += (f'<div class="karte"><h3>{titel}</h3><p>{text}</p>'
-                       f'<a class="knopf" href="/playbook/{k}">starten</a></div>')
+            zeilen += (
+                f'<div class="karte"><h3>{titel}</h3><p>{text}</p>'
+                f'<a class="knopf" href="/playbook/{k}">Untersuchung starten</a>'
+                f'<p style="color:#8b9096;font-size:.85rem;margin-top:.6rem">'
+                f'Dauert ein bis zwei Minuten. Der Bericht öffnet sich '
+                f'anschließend von selbst.</p></div>')
     marken = {"fertig": "gut", "laeuft": "warn", "wartet": "warn", "fehler": "schlecht"}
     if LAEUFE:
         zeilen_laeufe = "".join(
@@ -183,8 +202,14 @@ async def lauf(nummer: int) -> str:
     ) or "<li>— noch keine —</li>"
     aktiv = lauf_daten["status"] in ("wartet", "laeuft")
     marke = {"fertig": "gut", "fehler": "schlecht"}.get(lauf_daten["status"], "warn")
-    hinweis = ("<p class=\"unterzeile\">Der Lauf arbeitet — diese Seite lädt sich "
-               "alle 10 Sekunden neu.</p>" if aktiv else "")
+    hinweis = ""
+    if aktiv:
+        hinweis = ('<div class="karte" style="margin-bottom:1.2rem">'
+                   '<h3>Der Agent arbeitet</h3><p>Diese Seite lädt sich alle zehn '
+                   'Sekunden selbst neu — einfach offen lassen. Sobald der Bericht '
+                   'fertig ist, steht er unten. Der Lauf dauert ein bis zwei Minuten, '
+                   'weil der Agent nacheinander mehrere Werkzeuge benutzt und aus '
+                   'jedem Ergebnis entscheidet, was er als Nächstes prüft.</p></div>')
     return f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lauf {nummer} — zellwerk</title>
