@@ -76,6 +76,10 @@ services:
     networks: [backend]
     environment:
       EMQX_NODE__COOKIE: zellwerk
+      # ÄNDERN, sobald der Broker von außen erreichbar ist. Diese Variable
+      # wirkt zudem NUR beim ersten Start eines frischen Volumes; an einer
+      # bestehenden Installation setzt man das Passwort mit
+      #   emqx ctl admins passwd admin <neues>
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${ZW_EMQX_PASSWORD:-zellwerk-demo}
     volumes:
       - emqx-data:/opt/emqx/data
@@ -198,12 +202,18 @@ services:
     profiles: ["obs"]
     networks: [backend]
     environment:
+      # ÄNDERN vor jedem Betrieb, der über den eigenen Rechner hinausgeht.
+      # Wirkt NUR beim ersten Start eines frischen Volumes; danach hilft nur
+      #   grafana cli admin reset-admin-password <neues>
       GF_SECURITY_ADMIN_PASSWORD: ${ZW_GRAFANA_PASSWORD:-zellwerk-demo}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # Hinter einem Reverse-Proxy MUSS Grafana seine öffentliche Adresse
       # kennen, sonst zeigen Weiterleitungen nach dem Login auf den internen
       # Containernamen und die Anmeldung endet im Nichts.
+      # Öffentliche Adresse — MUSS in der .env auf den eigenen Hostnamen
+      # gesetzt werden. Der Standard passt nur für den lokalen Betrieb; hinter
+      # einem Reverse-Proxy zeigen Weiterleitungen sonst ins Leere.
       GF_SERVER_ROOT_URL: ${ZW_GRAFANA_ROOT_URL:-http://localhost:3000}
       GF_SERVER_DOMAIN: ${ZW_GRAFANA_DOMAIN:-localhost}
       # Der Proxy setzt X-Forwarded-*; ohne dieses Flag hält Grafana jede
