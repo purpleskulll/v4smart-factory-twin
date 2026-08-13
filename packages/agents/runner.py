@@ -3,7 +3,7 @@
     python -m agents.runner triage
     python -m agents.runner formierung
     python -m agents.runner trace --frage "Welche Zellen stammen aus SLURRY-0003?"
-    python -m agents.runner pass --serial ZW-2026-000042
+    python -m agents.runner pass --serial ZW-2026-BJQTG-000042
     python -m agents.runner testfragen     # die Akzeptanzfragen aus §10.3
 
 Jeder Lauf landet vollständig im `action_log` — inklusive der Werkzeuge, die der

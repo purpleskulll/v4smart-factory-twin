@@ -65,7 +65,7 @@ TOOLS = [
         "Slurry-Charge. Liefert je Stufe das Los, seine Merkmale UND die "
         "Prozesswerte der Station im Fertigungszeitraum. Entscheidend, wenn "
         "mehrere Ursachen dasselbe Endsymptom erzeugen können.",
-        {"serial": {"type": "string", "description": "Seriennummer, z. B. ZW-2026-000123"},
+        {"serial": {"type": "string", "description": "Seriennummer, z. B. ZW-2026-BJQTG-000123"},
          "lot_id": {"type": "string", "description": "alternativ eine Los-Nummer"}},
     ),
     tool_schema(

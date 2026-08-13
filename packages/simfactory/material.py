@@ -68,6 +68,34 @@ _LOT_COUNTER = itertools.count(1)
 _CELL_COUNTER = itertools.count(1)
 
 
+def _lauf_kennung() -> str:
+    """Kurze, je Prozessstart eindeutige Kennung für Los- und Seriennummern.
+
+    Ohne sie beginnen die Zähler nach jedem Neustart wieder bei 1 — die neuen
+    Zellen heißen dann genauso wie die alten. In der Datenbank greift dann
+    `ON CONFLICT (serial) DO UPDATE` und ÜBERSCHREIBT den bestehenden Eintrag,
+    statt einen neuen anzulegen. Der Effekt ist tückisch: die Fabrik produziert
+    sichtbar weiter, die Zellzahl in der Datenbank steht aber still (gemessen:
+    1979 Zellen, 60 Sekunden lang kein einziger Zuwachs), und niemand bekommt
+    einen Fehler zu sehen.
+
+    Die Kennung ist die Startzeit in Sekunden seit Jahresbeginn, base36 kodiert
+    — vier Zeichen, monoton steigend, ohne Zufall und damit ohne Kollision bei
+    Neustarts innerhalb derselben Sekunde... die es nicht gibt.
+    """
+    jetzt = datetime.now()
+    sekunden = int((jetzt - datetime(jetzt.year, 1, 1)).total_seconds())
+    zeichen = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    kennung = ""
+    while sekunden:
+        sekunden, rest = divmod(sekunden, 36)
+        kennung = zeichen[rest] + kennung
+    return kennung.rjust(5, "0")
+
+
+LAUF = _lauf_kennung()
+
+
 @dataclass
 class Lot:
     """Eine Charge an einem Prozessschritt (SPEC §6.2: `lot`).
@@ -100,7 +128,7 @@ class Lot:
         **traits: float,
     ) -> Lot:
         lot = cls(
-            id=f"{prefix}-{next(_LOT_COUNTER):04d}",
+            id=f"{prefix}-{LAUF}-{next(_LOT_COUNTER):04d}",
             station=station,
             material=material,
             started_at=now,
@@ -131,7 +159,7 @@ class Cell:
 
     @classmethod
     def create(cls, lot: Lot, now: datetime) -> Cell:
-        serial = f"ZW-{now.year}-{next(_CELL_COUNTER):06d}"
+        serial = f"ZW-{now.year}-{LAUF}-{next(_CELL_COUNTER):06d}"
         cell = cls(serial=serial, lot_id=lot.id, created_at=now,
                    order_id=lot.order_id, traits=dict(lot.traits))
         return cell

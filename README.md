@@ -427,7 +427,7 @@ Ein Lauf dauert **ein bis zwei Minuten**.
 docker compose exec agents python -m agents.runner triage
 docker compose exec agents python -m agents.runner formierung
 docker compose exec agents python -m agents.runner trace --frage "Welche Zellen stammen aus SLURRY-0003?"
-docker compose exec agents python -m agents.runner pass --serial ZW-2026-000042
+docker compose exec agents python -m agents.runner pass --serial ZW-2026-BJQTG-000042
 docker compose exec agents python -m agents.runner testfragen
 ```
 
@@ -498,6 +498,13 @@ Firmendaten**.
 Ein Fertigungsauftrag wird beim Start per REST aus dem Mock-ERP geholt und
 steuert, unter welcher Nummer der Mischer ansetzt. Von dort wandert die
 Auftragsnummer über jede Fertigungsstufe bis zur einzelnen Zelle.
+
+**Nummernformat.** Los- und Seriennummern enthalten eine **Lauf-Kennung**
+(fünf Zeichen, aus der Startzeit abgeleitet): `SLURRY-BJQTG-0001`,
+`ZW-2026-BJQTG-000042`. Ohne sie begännen die Zähler nach jedem Neustart wieder
+bei 1 — neue Zellen hießen dann wie alte, und die Datenbank überschriebe die
+bestehenden Einträge, statt neue anzulegen. Die Fabrik produzierte sichtbar
+weiter, während die Zellzahl stillstünde.
 
 ```
 Auftrag (PO-JAHR-NUMMER)
@@ -632,7 +639,7 @@ SELECT status, count(*) FROM cell GROUP BY status;
 WITH RECURSIVE pfad AS (
     SELECT c.serial, l.id AS lot_id, l.station, l.parent_id, l.traits, 0 AS tiefe
     FROM cell c JOIN lot l ON l.id = c.lot_id
-    WHERE c.serial = 'ZW-2026-000042'
+    WHERE c.serial = 'ZW-2026-BJQTG-000042'
   UNION ALL
     SELECT p.serial, l.id, l.station, l.parent_id, l.traits, p.tiefe+1
     FROM pfad p JOIN lot l ON l.id = p.parent_id

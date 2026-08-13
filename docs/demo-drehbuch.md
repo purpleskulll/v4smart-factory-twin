@@ -135,7 +135,7 @@ worden.*
 docker compose exec agents python -m agents.runner trace \
   --frage "Welche Zellen stammen aus Slurry-Charge SLURRY-0020 und wo sind sie jetzt?"
 
-docker compose exec agents python -m agents.runner pass --serial ZW-2026-000207
+docker compose exec agents python -m agents.runner pass --serial ZW-2026-BJQTG-000207
 ```
 
 Der Pass enthält Kennung, Chemie, gemessene Kapazität, die vollständige
