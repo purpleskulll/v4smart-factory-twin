@@ -209,6 +209,17 @@ services:
       # Der Proxy setzt X-Forwarded-*; ohne dieses Flag hält Grafana jede
       # Anfrage für lokal und protokolliert die falsche Herkunft.
       GF_SERVER_ENFORCE_DOMAIN: "false"
+      # Startseite ist das Linien-Dashboard, NICHT Grafanas Willkommensseite.
+      # Ohne das landet jeder nach dem Login auf "Welcome to Grafana" mit
+      # "Add your first data source" — das sieht aus wie eine leere
+      # Neuinstallation, obwohl Datenquelle und Dashboard längst da sind.
+      # Wer die Adresse aufruft, will die Anlage sehen, kein Tutorial.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/linie.json
+      # Werbe- und Neuigkeiten-Panels aus: sie holen Inhalte von außen, was in
+      # diesem Netz ohnehin nicht geht, und lenken vom Wesentlichen ab.
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       # MUSS hier stehen: die provisionierte Datenquelle enthält
       # `${ZW_DB_PASSWORD}`, und Grafana löst diesen Platzhalter aus SEINER
       # eigenen Umgebung auf — nicht aus der von Compose. Fehlt die Variable,
