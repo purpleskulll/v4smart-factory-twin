@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from simfactory.ui import STIL
 
 from .llm import LLM
 from .playbooks import PLAYBOOKS
@@ -60,34 +61,67 @@ async def _ausfuehren(nummer: int, name: str, kwargs: dict) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def start() -> str:
     """Eine schlichte Seite zum Auslösen — kein Terminal nötig."""
-    zeilen = "".join(
-        f'<li><a href="/playbook/{k}">{k}</a> — '
-        f'{(v.__doc__ or "").splitlines()[0]}</li>'
-        for k, v in PLAYBOOKS.items() if k != "pass"
-    )
-    letzte = "".join(
-        f'<li>#{n}: {eintrag["playbook"]} — <b>{eintrag["status"]}</b>'
-        f' <a href="/runs/{n}">ansehen</a></li>'
-        for n, eintrag in sorted(LAEUFE.items(), reverse=True)[:8]
-    ) or "<li>noch keine</li>"
+    beschreibungen = {
+        "triage": ("Ausschuss-Triage", "Sucht die Station, die den Ausschuss "
+                   "verursacht — und prüft ausdrücklich auch die zweite mögliche "
+                   "Ursache, statt bei der erstbesten zu bleiben."),
+        "formierung": ("Formierungs-Anomalie", "Unterscheidet ein Anlagenproblem "
+                       "von einem Zellproblem. Beide sehen im Dashboard gleich aus, "
+                       "verlangen aber gegenteilige Maßnahmen."),
+        "trace": ("Rückverfolgung", "Beantwortet eine Frage in natürlicher Sprache "
+                  "über Chargen, Zellen und ihre Herkunft."),
+    }
+    zeilen = ""
+    for k in PLAYBOOKS:
+        if k == "pass":
+            continue
+        titel, text = beschreibungen.get(k, (k, ""))
+        if k == "trace":
+            feld = ("width:100%;padding:.5rem;margin-bottom:.5rem;background:#0d0e12;"
+                    "border:1px solid #2f3b52;border-radius:6px;color:#dcdde0;font:inherit")
+            zeilen += f'''<div class="karte"><h3>{titel}</h3><p>{text}</p>
+              <form method="get" action="/playbook/trace">
+                <input name="frage" style="{feld}"
+                       placeholder="z. B. Welche Zellen stammen aus SLURRY-0003?">
+                <button type="submit">starten</button>
+              </form></div>'''
+        else:
+            zeilen += (f'<div class="karte"><h3>{titel}</h3><p>{text}</p>'
+                       f'<a class="knopf" href="/playbook/{k}">starten</a></div>')
+    marken = {"fertig": "gut", "laeuft": "warn", "wartet": "warn", "fehler": "schlecht"}
+    if LAEUFE:
+        zeilen_laeufe = "".join(
+            f'<tr><td>#{n}</td><td>{e["playbook"]}</td>'
+            f'<td><span class="marke {marken.get(e["status"],"warn")}">{e["status"]}</span></td>'
+            f'<td>{e.get("runden","—")}</td>'
+            f'<td><a href="/runs/{n}">Bericht ansehen</a></td></tr>'
+            for n, e in sorted(LAEUFE.items(), reverse=True)[:10])
+        letzte = ("<table><thead><tr><th>Nr.</th><th>Playbook</th><th>Status</th>"
+                  "<th>Runden</th><th></th></tr></thead>"
+                  f"<tbody>{zeilen_laeufe}</tbody></table>")
+    else:
+        letzte = '<p class="unterzeile">Noch kein Lauf gestartet.</p>'
     return f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>zellwerk — Agenten</title>
-<style>
- body{{font-family:system-ui,sans-serif;max-width:52rem;margin:3rem auto;padding:0 1rem;
-       background:#111217;color:#d8d9da;line-height:1.6}}
- a{{color:#6e9fff}} h1{{font-size:1.4rem}} h2{{font-size:1.05rem;margin-top:2rem}}
- li{{margin:.4rem 0}} code{{background:#22242b;padding:.15rem .4rem;border-radius:3px}}
-</style></head><body>
-<h1>zellwerk — Agenten</h1>
-<p>Die Agenten arbeiten im <b>Shadow Mode</b>: sie untersuchen und schlagen vor,
-ausgeführt wird nichts. Ein Lauf dauert ein bis zwei Minuten.</p>
-<h2>Playbook starten</h2><ul>{zeilen}</ul>
-<h2>Letzte Läufe</h2><ul>{letzte}</ul>
-<h2>Fehler einspielen</h2>
-<p>Über die Musterfabrik: <code>POST /faults/F1</code> … <code>F5</code>.
-F1 = Viskositätsdrift, F3 = Übertemperatur, F4 = Elektrolyt-Unterdosierung.</p>
-<p>Die Ergebnisse erscheinen auch im Dashboard <i>Agenten &amp; Befunde</i>.</p>
-</body></html>"""
+<style>{STIL}</style></head><body><div class="hülle">
+
+<h1>Agenten</h1>
+<p class="unterzeile">Shadow Mode — die Agenten untersuchen und schlagen vor.
+Ausgeführt wird nichts.</p>
+
+<h2>Untersuchung starten</h2>
+<div class="fehler">{zeilen}</div>
+
+<h2>Läufe</h2>
+{letzte}
+
+<div class="fuss">
+<p>Ein Lauf dauert ein bis zwei Minuten. Jeder Werkzeugaufruf landet im
+Audit-Log und erscheint zusätzlich im Grafana-Dashboard
+<i>Agenten &amp; Befunde</i>.</p>
+</div>
+</div></body></html>"""
 
 
 @app.get("/playbook/{name}")
@@ -148,24 +182,30 @@ async def lauf(nummer: int) -> str:
         f"<li>{w}</li>" for i, w in enumerate(lauf_daten.get("werkzeuge", []), 1)
     ) or "<li>— noch keine —</li>"
     aktiv = lauf_daten["status"] in ("wartet", "laeuft")
+    marke = {"fertig": "gut", "fehler": "schlecht"}.get(lauf_daten["status"], "warn")
+    hinweis = ("<p class=\"unterzeile\">Der Lauf arbeitet — diese Seite lädt sich "
+               "alle 10 Sekunden neu.</p>" if aktiv else "")
     return f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
-<title>Lauf {nummer}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lauf {nummer} — zellwerk</title>
 <meta http-equiv="refresh" content="{10 if aktiv else 600}">
-<style>
- body{{font-family:system-ui,sans-serif;max-width:56rem;margin:3rem auto;padding:0 1rem;
-       background:#111217;color:#d8d9da;line-height:1.6}}
- pre{{white-space:pre-wrap;background:#191b20;padding:1rem;border-radius:6px}}
- a{{color:#6e9fff}}
-</style></head><body>
-<p><a href="/">&larr; zurück</a></p>
+<style>{STIL}
+ pre{{white-space:pre-wrap;background:#16181d;border:1px solid #24262c;
+      padding:1.1rem;border-radius:8px;font-size:.9rem;line-height:1.6}}
+ ol{{padding-left:1.4rem}} ol li{{margin:.3rem 0}}
+</style></head><body><div class="hülle">
+<p><a href="/">&larr; Übersicht</a></p>
 <h1>Lauf {nummer} — {lauf_daten['playbook']}</h1>
-<p>Status: <b>{lauf_daten['status']}</b> · Runden: {lauf_daten.get('runden','—')}</p>
-<h2>Bericht</h2><pre>{bericht}</pre>
+<p class="unterzeile">Status <span class="marke {marke}">{lauf_daten['status']}</span>
+ · {lauf_daten.get('runden','—')} Runden</p>
+{hinweis}
+<h2>Bericht</h2>
+<pre>{bericht}</pre>
 <h2>Werkzeuge, die der Agent selbst gewählt hat</h2>
 <ol>{werkzeuge}</ol>
-<p style="color:#888">Die Reihenfolge ist nicht vorgegeben — sie ergibt sich
-aus dem, was der Agent unterwegs findet.</p>
-</body></html>"""
+<p class="unterzeile">Die Reihenfolge ist nicht vorgegeben — sie ergibt sich aus
+dem, was der Agent unterwegs findet.</p>
+</div></body></html>"""
 
 
 @app.get("/health")

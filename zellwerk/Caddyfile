@@ -54,8 +54,13 @@ http://{$LEGACY_HOST} {
 # Eigenes Login vorhanden, aber zusätzlich hinter Basic Auth: die
 # Broker-Konsole erlaubt Eingriffe in den Datenfluss und ist nichts, was
 # offen im Netz stehen sollte.
+# OHNE `import auth`: EMQX bringt ein eigenes Login mit und beantwortet
+# nicht angemeldete API-Aufrufe SELBST mit 401 und WWW-Authenticate. Steht
+# davor noch Basic Auth, hält der Browser diese Antwort für eine erneute
+# Aufforderung und zeigt den Anmeldedialog immer wieder — eine Schleife, die
+# nur mit Abbruch und 401 endet. Ein Dienst mit eigenem Login gehört nicht
+# hinter Basic Auth.
 http://{$CONSOLE_HOST} {
-	import auth
 	encode zstd gzip
 	reverse_proxy emqx:18083 {
 		import proxy_header

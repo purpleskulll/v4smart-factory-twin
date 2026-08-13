@@ -23,11 +23,13 @@ from datetime import UTC, datetime
 
 import aiomqtt
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .erp_client import ErpClient
 from .opcua_layer import StationServer
 from .stations import Factory
+from .ui import startseite
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("simfactory")
@@ -39,6 +41,7 @@ TICK_S = float(os.environ.get("ZW_TICK_S", "1.0"))
 # Zeitraffer: 1.0 = Echtzeit. Für Demos lässt sich die Fabrik beschleunigen,
 # ohne die Prozesslogik anzufassen.
 SPEED = float(os.environ.get("ZW_SPEED", "1.0"))
+AGENTEN_URL = os.environ.get("ZW_AGENTS_URL", "")
 ERP_URL = os.environ.get("ZW_ERP_URL", "http://erp-mock:8000")
 
 
@@ -253,6 +256,34 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="zellwerk Musterfabrik", lifespan=lifespan)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def ui() -> str:
+    """Bedienoberfläche. Ohne sie lief ein Aufruf der Adresse auf 404 —
+    für jeden, der die Seite öffnet, sieht das nach einem kaputten Dienst aus."""
+    return startseite(await state(),
+                      sorted({f for st in SIM.factory.stations for f in st.faults}),
+                      AGENTEN_URL)
+
+
+@app.post("/ui/fault/{fault_id}")
+async def ui_fault(fault_id: str, zuruecknehmen: str = Form("0")):
+    """Schaltet ein Szenario per Knopfdruck und kehrt zur Seite zurück."""
+    kennung = fault_id.upper()
+    if zuruecknehmen == "1":
+        SIM.factory.clear(kennung)
+        log.info("Fehlerszenario %s über die Oberfläche zurückgenommen", kennung)
+    else:
+        try:
+            station = SIM.factory.inject(kennung)
+            log.warning("Fehlerszenario %s über die Oberfläche eingespielt (%s)",
+                        kennung, station)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    # 303: nach einem POST auf GET umschalten, sonst löst ein Neuladen der
+    # Seite das Szenario erneut aus.
+    return RedirectResponse("/", status_code=303)
 
 
 @app.get("/health")
