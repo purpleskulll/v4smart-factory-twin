@@ -1,29 +1,22 @@
 # ============================================================================
-# V4Smart — edge / public URLs (Caddy 2.8)
+# zellwerk — Edge / öffentliche URLs
 # ----------------------------------------------------------------------------
-# Three hostnames (DNS A-records pointing at this host; a wildcard works too):
-#   TWIN_HOST     -> dashboard (React UI) + /api + /ws (middleware-core)
-#   CONSOLE_HOST  -> Redpanda Console (topics, consumer groups)
-#   QUESTDB_HOST  -> QuestDB web console (SQL on the historian)
+# Dieser Caddy hat den Platz des vorherigen Projekts übernommen: er belegt in
+# der inneren Engine die Ports 80/443, die der Host auf 8090/8453 abbildet.
 #
-# Everything sits behind basic auth. Generate the hash with:
-#   make hash-password pw='YOUR_PASSWORD'
-# Caddy obtains TLS certificates from Let's Encrypt automatically (needs ports
-# 80 and 443 reachable from the internet).
+# `http://` ist Absicht: TLS terminiert der VORGELAGERTE Caddy des Servers
+# (Zertifikat via DNS-01) und reicht per HTTP weiter. Ohne das Präfix würde
+# dieser Caddy jede Anfrage mit 308 auf https umleiten — die beiden Proxys
+# liefen dann im Kreis.
 #
-# RUNNING BEHIND AN EXISTING REVERSE PROXY
-# If ports 80/443 are already taken, publish the edge on other ports (see
-# docker-compose.yml) and let your existing proxy terminate TLS. In that case
-# prefix each site address below with `http://` — otherwise this Caddy answers
-# the upstream proxy with a 308 redirect to https and the two proxies loop.
+# Kein Basic Auth vor Grafana: es bringt ein eigenes Login mit, und zwei
+# hintereinandergeschaltete Anmeldungen sind keine doppelte Sicherheit,
+# sondern doppelte Reibung. Die Dienste OHNE eigenes Login stehen dagegen
+# hinter `import auth`.
 # ============================================================================
 
 {
 	email {$ACME_EMAIL}
-	# While DNS or ports are still in flux, test against the staging CA first
-	# (avoids Let's Encrypt rate limits): uncomment, test, comment out again,
-	# then: docker compose --profile edge restart caddy
-	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
 (auth) {
@@ -32,32 +25,65 @@
 	}
 }
 
-{$TWIN_HOST} {
+(proxy_header) {
+	header_up Host {host}
+	header_up X-Real-IP {remote_host}
+	header_up X-Forwarded-For {remote_host}
+}
+
+# --- Hauptadresse: das Linien-Dashboard ------------------------------------
+http://{$ZELLWERK_HOST} {
+	encode zstd gzip
+	reverse_proxy grafana:3000 {
+		import proxy_header
+	}
+}
+
+# --- Die bisherige Adresse zeigt auf dasselbe Dashboard ---------------------
+# Der alte Digital Twin lief hier. Statt ins Leere zu laufen, führt die
+# gewohnte Adresse jetzt auf zellwerk — wer sie im Lesezeichen hat, landet
+# weiter an einer sinnvollen Stelle.
+http://{$LEGACY_HOST} {
+	encode zstd gzip
+	reverse_proxy grafana:3000 {
+		import proxy_header
+	}
+}
+
+# --- Broker-Oberfläche (EMQX) ----------------------------------------------
+# Eigenes Login vorhanden, aber zusätzlich hinter Basic Auth: die
+# Broker-Konsole erlaubt Eingriffe in den Datenfluss und ist nichts, was
+# offen im Netz stehen sollte.
+# OHNE `import auth`: EMQX bringt ein eigenes Login mit und beantwortet
+# nicht angemeldete API-Aufrufe SELBST mit 401 und WWW-Authenticate. Steht
+# davor noch Basic Auth, hält der Browser diese Antwort für eine erneute
+# Aufforderung und zeigt den Anmeldedialog immer wieder — eine Schleife, die
+# nur mit Abbruch und 401 endet. Ein Dienst mit eigenem Login gehört nicht
+# hinter Basic Auth.
+http://{$CONSOLE_HOST} {
+	encode zstd gzip
+	reverse_proxy emqx:18083 {
+		import proxy_header
+	}
+}
+
+# --- Agenten: Playbooks starten und Berichte lesen --------------------------
+# Hinter Basic Auth: ein Lauf kostet Modell-Aufrufe, das gehört nicht offen
+# ins Netz.
+http://{$AGENTS_HOST} {
 	import auth
 	encode zstd gzip
-
-	@api path /api/*
-	handle @api {
-		reverse_proxy middleware-core:8080
-	}
-
-	# WebSocket live stream (Caddy handles the upgrade automatically)
-	@ws path /ws
-	handle @ws {
-		reverse_proxy middleware-core:8080
-	}
-
-	handle {
-		reverse_proxy dashboard-ui:80
+	reverse_proxy agents:8010 {
+		import proxy_header
 	}
 }
 
-{$CONSOLE_HOST} {
+# --- Musterfabrik: Zustand und Fault-Injection ------------------------------
+# Hinter Basic Auth, denn hierüber lassen sich Fehlerszenarien auslösen.
+http://{$FACTORY_HOST} {
 	import auth
-	reverse_proxy console:8080
-}
-
-{$QUESTDB_HOST} {
-	import auth
-	reverse_proxy questdb:9000
+	encode zstd gzip
+	reverse_proxy simfactory:8001 {
+		import proxy_header
+	}
 }

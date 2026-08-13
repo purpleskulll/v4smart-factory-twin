@@ -1,276 +1,460 @@
-# V4Smart — Factory Digital Twin
+# zellwerk — Musterfabrik + KI-native Middleware für die Batterieproduktion
 
-An event-driven digital twin of a small factory: eight simulated SCADA machines
-stream **2,000 sensor readings per second** through Redpanda, a Rust routing
-engine validates and aggregates them into a QuestDB historian, a Python service
-predicts bearing-type failures **before** they become critical and throttles the
-affected machine automatically, and a React dashboard shows all of it live.
+Eine simulierte Lithium-Ionen-Zellfertigung mit sechs Stationen, die Prozessdaten
+über OPC UA ausgibt — und eine Middleware, die daraus ein semantisches
+Fabrikmodell baut und es KI-Agenten als Werkzeuge anbietet.
 
-Everything runs in Docker. `make up` on an empty machine brings the whole stack
-online in roughly ten seconds.
+Der Kern ist nicht die Simulation, sondern was sie ermöglicht: **Fehler pflanzen
+sich über das Material fort, nicht über die Uhrzeit.** Eine Slurry-Charge, die
+mit erhöhter Viskosität gemischt wurde, trägt diese Eigenschaft weiter — der
+Coater streut, der Kalander verfehlt die Zielporosität, und die daraus gebauten
+Zellen verlieren in der Formierung Kapazität. Erst diese Kette macht die
+Genealogie zu mehr als einer Datenbanktabelle: sie ist der einzige Weg, eine
+Ursache zu **belegen** statt zu vermuten.
 
-![Control Center](docs/screenshots/control-center.png)
+---
 
-## Why it exists
+## Inhalt
 
-Most "digital twin" demos show a dashboard with moving numbers. The interesting
-part is the **closed loop**: an anomaly is detected from a leading indicator,
-an action is taken automatically, the physical process responds, and the system
-proves it recovered. This project implements that loop end to end and ships the
-test that verifies it (`make test-healing`).
+- [Was man sieht](#was-man-sieht) · [Schnellstart](#schnellstart)
+- [Die sechs Stationen](#die-sechs-stationen) · [Fehlerszenarien](#fehlerszenarien)
+- [Architektur](#architektur) · [Datenmodell](#datenmodell)
+- [Die Werkzeuge der Agenten](#die-werkzeuge-der-agenten) · [Playbooks](#playbooks)
+- [Gemessene Ergebnisse](#gemessene-ergebnisse) · [Tests](#tests)
+- [Konfiguration](#konfiguration) · [Betrieb hinter einem Proxy](#betrieb-hinter-einem-reverse-proxy)
+- [Entwurfsentscheidungen](#entwurfsentscheidungen-die-den-unterschied-machen)
 
-The simulated physics make the loop meaningful: vibration rises first, and
-temperature follows with a ~25 s time constant. That lag is the prediction
-window — the model sees the vibration slope long before the temperature becomes
-dangerous.
+---
 
-**Measured on a single 4-core container budget:**
+## Was man sieht
+
+Drei Oberflächen, jede mit einem eigenen Zweck:
+
+**Grafana** — drei Dashboards
+- *Linienübersicht*: die Anlage in Betrieb, Sollfenster als gestrichelte Linien
+- *Zellen & Genealogie*: Aufträge mit Fortschritt, Rückverfolgung, und die
+  Tabelle „Auffällige Zellen mit ihrer Herkunft" — Kapazität, Elektrolyt,
+  Porosität und Viskosität nebeneinander
+- *Agenten & Befunde*: was die KI untersucht, was sie vorschlägt, womit sie es belegt
+
+**Musterfabrik** — Kennzahlen der Produktion, Fertigungsaufträge, und die fünf
+Fehlerszenarien als Karten mit Knopf. Jedes mit der Erklärung, an welcher
+Station es sich auswirkt — und das ist nie dieselbe, an der es entsteht.
+
+**Agenten** — Playbooks per Klick starten, Bericht im Browser lesen. Ein Lauf
+dauert ein bis zwei Minuten; die Ergebnisseite lädt sich selbst nach.
+
+---
+
+## Schnellstart
+
+Voraussetzungen: Docker mit Compose v2, etwa 4 CPU-Kerne und 6 GB RAM.
+
+```bash
+cp .env.example .env        # für den lokalen Betrieb genügen die Vorgaben
+make up                     # Fabrik + Kern + Dashboards
+make ps                     # alle Dienste gesund?
+```
+
+Nach etwa **50 Minuten** hat die erste Zelle alle sechs Stationen durchlaufen.
+Für Vorführungen lässt sich die Zeit raffen, ohne die Prozesslogik anzufassen:
+
+```bash
+ZW_SPEED=30 docker compose --profile sim up -d --force-recreate simfactory
+```
+
+Die KI-Schicht braucht einen LLM-Zugang (siehe [LLM-Zugang](#llm-zugang)):
+
+```bash
+make up-ai
+```
+
+Ein Fehlerszenario einspielen und beobachten:
+
+```bash
+make fault id=F1
+make state
+```
+
+---
+
+## Die sechs Stationen
+
+Jede Station ist ein eigener OPC-UA-Server auf eigenem Port (4841–4846), Takt
+1 s, Formierung 10 s.
+
+| Station | Prozessvariablen (Auswahl) | Sollbereich |
+|---|---|---|
+| `mixer01` Mischen | Viskosität, Feststoffanteil, Temperatur, Mischdauer | 2–6 Pa·s · 45–55 % · 20–30 °C |
+| `coater01` Beschichten | Nassschichtdicke, Streuung, Bahngeschwindigkeit, Trocknertemperatur, Flächengewicht, Haftungsindex | 120–200 µm · 20–60 m/min · 80–130 °C |
+| `calender01` Kalandrieren | Liniendruck, Spaltmaß, Porosität | 300–1500 N/mm · 28–38 % |
+| `assembly01` Wickeln/Stapeln | Zugspannung, Ausrichtungsfehler, Takt, Delaminationen | < 300 µm |
+| `filling01` Elektrolyt | Dosiermenge, Vakuumdruck, Dichtheitsprüfung, Pumpe | 5 g ±1,5 % |
+| `formation01` Formierung | je Kanal: Strom, Spannung, Temperatur, Status, Drosselung | C/10 · 3,0–4,2 V · 25–45 °C |
+
+Die Parameter sind plausible Lehrbuch-Defaults, ausdrücklich **keine realen
+Firmendaten**.
+
+**Materialfluss.** Ein Fertigungsauftrag wird per REST aus dem Mock-ERP geholt
+und steuert, unter welcher Nummer der Mischer ansetzt. Von dort wandert die
+Auftragsnummer über jede Fertigungsstufe bis zur Zelle. Der Mischer erzeugt
+Slurry-Lose, der Coater macht daraus Elektroden-Lose, der Kalander verdichtet
+sie, die Assemblierung baut Zellen mit Seriennummern (`ZW-JAHR-LAUFNUMMER`),
+Befüllung und Formierung verarbeiten sie einzeln.
+
+**Die Linie läuft im Fließgleichgewicht:**
+
+| Station | Taktzeit |
+|---|---|
+| Mischer | 10 min je Slurry-Los |
+| Coater | 400 m bei 40 m/min = 10 min |
+| Kalander | 400 m bei 40 m/min = 10 min |
+| Assemblierung | 20 Zellen à 30 s = 10 min |
+| Formierung | 8 Kanäle à 240 s = eine Zelle je 30 s |
+
+Ohne diese Abstimmung staut sich das Material vor der Formierung, und
+auffällige Chargen erreichen sie nie — die Kausalkette wäre dann nicht
+nachweisbar.
+
+---
+
+## Fehlerszenarien
+
+Auslösbar über die Oberfläche oder per `POST /faults/{id}`.
+
+| ID | Szenario | Wo es sichtbar wird |
+|---|---|---|
+| F1 | Viskositätsdrift im Mischer | Streuung am Coater → Porosität unter Soll → Kapazitätsverlust in der Formierung |
+| F2 | Trocknertemperatur zu hoch | Haftung sinkt, Delamination erst in der Assemblierung |
+| F3 | Übertemperatur in einem Formierkanal | Ein Kanal > 50 °C, Zelle in Quarantäne, Edge-Regel drosselt |
+| F4 | Elektrolyt-Unterdosierung | Unauffällig bis zur Formierung, dort niedrige Kapazität |
+| F5 | Ausfall eines Zykler-Kanals | `quality=bad`, Durchsatzverlust **ohne** Qualitätsproblem |
+
+**Zwei Paare sind die eigentlichen Prüfsteine:**
+
+**F1 und F4** erzeugen dasselbe Endsymptom — zu wenig Kapazität — über
+verschiedene Wege. In der Formierung sind sie nicht unterscheidbar. Nur die
+Genealogie trennt sie: bei F1 liegt die Porosität unter Soll, bei F4 die
+Dosiermenge.
+
+**F3 und F5** sehen beide nach „Kanal auffällig" aus, verlangen aber
+gegensätzliche Reaktionen. Der überhitzte Kanal liefert *gültige* Werte, die zu
+hoch sind — die Zelle ist geschädigt und gehört in Quarantäne. Der ausgefallene
+Kanal liefert *ungültige* Werte — die Zelle ist in Ordnung und gehört auf einen
+anderen Kanal. Ein Klassifikator, der nur auf Zahlen schaut, verschrottet die
+zweite grundlos.
+
+**Wie ein Szenario endet.** Es läuft, bis es zurückgenommen wird — von allein
+endet keines. Danach sind die **Messwerte sofort normal, die Zellen nicht**:
+Chargen, die den Fehler mitbekommen haben, wandern weiter durch die Linie und
+fallen später trotzdem durch. Bis die letzte betroffene Zelle die Formierung
+verlassen hat, vergehen rund 45 Minuten Simulationszeit. Genau darum geht es:
+Der Fehler ist längst behoben, und der Ausschuss läuft trotzdem noch.
+
+---
+
+## Architektur
+
+```
+  AGENTEN — Playbooks: Triage · Formierung · Rückverfolgung · Batteriepass
+        │  Shadow Mode: sie schlagen vor, sie führen nicht aus
+        ▼  MCP-Werkzeuge, jeder Aufruf im Audit-Log
+  SEMANTISCHE SCHICHT — Anlagen · Aufträge · Lose · Zellen · Genealogie
+        │                + Edge-Rule-Engine (deterministisch, < 1 s)
+        ▼  SQL
+  TimescaleDB — Zeitreihen (Hypertables) und Modell in EINER Datenbank
+        ▲  MQTT subscribe
+  UNIFIED NAMESPACE — EMQX
+        │  zellwerk/v1/{site}/{area}/{line}/{station}/{kind}/{name}
+        ▲  OPC UA → MQTT
+  MUSTERFABRIK — 6 OPC-UA-Server + Fault-Injection + Mock-ERP
+```
+
+**Dienste** (Compose-Profile in Klammern)
+
+| Dienst | Profil | Rolle |
+|---|---|---|
+| `emqx` | — | MQTT-Broker, Unified Namespace |
+| `timescaledb` | — | Zeitreihen und semantisches Modell |
+| `simfactory` | sim | sechs Stationen, Fault-Injection, Bedienoberfläche |
+| `erp-mock` | sim | Fertigungsaufträge und Stammdaten |
+| `connector` | core | OPC UA → UNS, konfigurationsgetrieben |
+| `ingest` | core | UNS → TimescaleDB, gebündelt |
+| `rules` | core | Edge-Rule-Engine, deterministisch; meldet über `core/events` |
+| `grafana` | obs | drei Dashboards |
+| `mcpserver` | ai | Fabrikmodell als MCP-Werkzeuge |
+| `agents` | ai | Playbooks über HTTP |
+| `zellwerk-llm` | ai | LLM-Zugang, einziger Weg nach draußen |
+| `caddy` | edge | öffentliche Adressen |
+
+Broker und Datenbank tragen **bewusst kein Profil**: mehrere Profile hängen von
+ihnen ab, und eine Abhängigkeit über eine Profilgrenze hinweg ist in Compose
+kein gültiges Projekt.
+
+**Netzentwurf**
+
+| Netz | Eigenschaft | Wer hängt dran |
+|---|---|---|
+| `backend` | `internal: true` — kein Internet | alle Dienste |
+| `egress` | normal | ausschließlich `zellwerk-llm` |
+| `edge` | normal, ohne Internetbedarf | ausschließlich `caddy` |
+
+Genau eine Tür nach draußen, und die führt zur Modell-API. Ein Container, der
+*nur* in einem `internal`-Netz hängt, kann übrigens keine Ports veröffentlichen
+— deshalb hat der Edge ein eigenes Netz, obwohl er selbst nichts nach außen
+sendet.
+
+---
+
+## Datenmodell
+
+| Tabelle | Zweck |
+|---|---|
+| `asset` | Anlagenregister mit OPC-UA-Endpunkt |
+| `production_order` | Fertigungsaufträge aus dem Mock-ERP |
+| `lot` | Charge je Prozessschritt, mit `parent_id`, `order_id` und `traits` |
+| `cell` | Einzelzelle mit Status, Grade, `order_id` und `traits` |
+| `genealogy` | Kanten: Los → Los, Los → Zelle |
+| `measurement` | Hypertable: Zeitreihen mit Qualitätskennzeichen |
+| `event` | Hypertable: Alarme und Ereignisse, entprellt und quittierbar (`packages/core/events`) |
+| `action_log` | Audit: jeder Werkzeugaufruf eines Agenten |
+| `process_window` | Sollbereiche — dieselbe Wahrheit für Werkzeuge und Dashboards |
+
+`traits` trägt die Qualitätsmerkmale, die ein Los an die nächste Stufe
+weitergibt. Dort liegt die Evidenz, auf die sich jede Ursachenaussage stützt.
+
+**Topic-Baum:** `zellwerk/v1/{site}/{area}/{line}/{station}/{kind}/{name}` mit
+`kind` ∈ `pv` · `state` · `event` · `trace` · `cmd`. Nutzlast immer
+`{ts, value, quality, unit}`.
+
+---
+
+## Die Werkzeuge der Agenten
+
+Alle read-only außer den zwei markierten. Jeder Aufruf landet im `action_log` —
+ohne lückenloses Audit wäre „Shadow Mode" eine Behauptung statt einer
+Eigenschaft.
+
+| Werkzeug | Zweck |
+|---|---|
+| `get_factory_overview` | Einstieg: Anlagen, Zustände, offene Alarme |
+| `get_asset_state` | eine Station im Detail, mit Fenster-Kennung |
+| `query_timeseries` | Verlauf einer Kennzahl mit Kennwerten |
+| `get_process_window` | Sollbereich, Ist-Verteilung, Cpk-Näherung |
+| `trace_cell_genealogy` | Zelle rückwärts bis zur Slurry-Charge, mit Prozesswerten je Stufe |
+| `find_similar_cells` | Betroffenheitsanalyse über Status, Charge, Kapazität oder Formierkanal |
+| `get_active_alarms` | offene Ereignisse mit Kontext |
+| `propose_action` | **schreibend (Shadow)** — protokolliert einen Vorschlag |
+| `execute_action` | **schreibend (Live)** — nur mit Flag *und* Whitelist, per Default aus |
+| `export_battery_pass` | Demo-Subset der Verordnung (EU) 2023/1542 |
+
+**Jedes leere Ergebnis erklärt sich selbst.** Ein Werkzeug, das bei einer
+erfolglosen Suche nur eine leere Liste zurückgibt, provoziert Wiederholungen:
+der Aufrufer weiß nicht, ob sein Kriterium falsch war oder ob es nichts zu
+finden gibt. Hier liefert eine leere Antwort mit, was tatsächlich vorhanden ist
+— bei `query_timeseries` etwa die Liste der bekannten Kennzahlen dieser Anlage.
+
+Der MCP-Server lässt sich auch direkt an Claude Desktop oder Claude Code
+anbinden:
+
+```bash
+python -m mcpserver.server          # stdio
+python -m mcpserver.server --http   # SSE, Port 8765
+```
+
+---
+
+## Playbooks
+
+Jedes hat einen festen Ablauf, einen klaren Auslöser und ein klares Endartefakt.
+Ausgabe immer: **Befund, Evidenz, Empfehlung, Konfidenz**.
+
+| Playbook | Aufgabe | Akzeptanzkriterium |
+|---|---|---|
+| Ausschuss-Triage | verursachende Station finden | benennt bei F1 und F4 die richtige Wurzel |
+| Formierungs-Anomalie | Anlagen- von Zellproblem trennen | klassifiziert F3 und F5 gegensätzlich |
+| Rückverfolgung | Frage in natürlicher Sprache | beantwortet die Testfragen aus `tests/trace_questions.yaml` |
+| Batteriepass | JSON je Zelle | Demo-Subset, vollständige Genealogie |
+
+Aufrufbar über die Weboberfläche oder auf der Kommandozeile:
+
+```bash
+docker compose exec agents python -m agents.runner triage
+docker compose exec agents python -m agents.runner formierung
+docker compose exec agents python -m agents.runner trace --frage "…"
+docker compose exec agents python -m agents.runner pass --serial ZW-2026-000042
+docker compose exec agents python -m agents.runner testfragen
+```
+
+Zwei Leitplanken stehen in jedem System-Prompt: **keine Behauptung ohne Beleg**
+(ein Agent, der eine Ursache nennt, ohne den Messwert zu zeigen, ist wertlos —
+niemand sperrt eine Charge auf ein Bauchgefühl hin) und **Shadow Mode** (der
+Abschluss ist ein Vorschlag, nie eine Ausführung).
+
+---
+
+## Gemessene Ergebnisse
+
+Alles aus echten Läufen, jeweils mit dem Weg, auf dem es gemessen wurde:
 
 | | |
 |---|---|
-| Ingest | 2,000 msg/s sustained, 0 dropped (three consecutive measurements) |
-| Detection | anomaly throttled 20–28 s after fault injection (model fires at ~16 s, the deterministic guard only at ~24 s) |
-| Outcome | peak temperature 66.0–68.7 °C against an 85 °C failure threshold |
-| Without the ML service | the same fault drives the machine into ERROR after 58 s at 85.7 °C |
-| Broker kill | full recovery to 2,000 msg/s in 26 s, no manual intervention |
-| Database outage | hot path unaffected, dropped rows counted and reported |
-| Footprint | 1.86 GB RAM for the entire stack |
+| Kausalkette F1 | Viskosität 6,99 Pa·s (Soll 2–6) → Streuung 10,95 µm → Porosität 20,62 % (Soll 28–38) → Kapazitätsausfall |
+| Genealogie | von der Ausschusszelle per SQL bis zur Slurry-Charge, vier Stufen |
+| Edge-Regel-Latenz | Symptom → Kommando: min 0,30 ms · Median 0,40 ms · max 0,50 ms (n = 8), Anforderung 500 ms |
+| Geschlossener Regelkreis | Regel feuert bei 50,51 °C → Kommando in 0,5 ms → Drosselung auf Faktor 0,50 → Temperatur fällt auf 44,4 °C |
+| Fließgleichgewicht | vier Stunden Normalbetrieb, alle Warteschlangen bei 0 |
+| Ingest unter Last | 99.990 Werte in 20 s = 4999/s, **0 % Verlust** (der Lastgenerator selbst erreichte 4999/s — die Obergrenze des Schreibpfads wurde damit nicht ermittelt) |
+| Ausschuss-Triage bei F4 | 8 Runden, 13 Werkzeuge; Dosierpumpe benannt, Cpk −0,141 als Beleg, Mischer/Coater/Kalander namentlich ausgeschlossen |
+| F3 gegen F5 | korrekt gegensätzlich klassifiziert: Quarantäne vs. Umlagern |
+| Batteriepass | 16 Prozess-Kennwerte über vier Fertigungsstufen |
 
-## Architecture
+---
 
-```
-                        ┌─────────────────────────────────────────────────┐
-                        │              Redpanda (event bus)               │
-   ┌────────────────┐   │  sensor_raw ── sensor_clean ── mes_orders       │
-   │ factory-       │──▶│  machine_control ── system_events               │
-   │ simulator (Go) │◀──│                                                 │
-   └────────────────┘   └───┬───────────▲───────────┬─────────────▲───────┘
-     8 machines (SCADA)     │           │           │             │
-     + MES generator        ▼           │           ▼             │
-                    ┌──────────────┐    │    ┌──────────────┐     │
-                    │ middleware-  │    │    │ predictive-  │─────┘
-                    │ core (Rust)  │    │    │ ml (Python)  │  throttle command
-                    │ filter/agg   │    │    │ IsolationFor.│  on machine_control
-                    └──┬────────┬──┘    │    └──────────────┘
-            ILP (9009) │        │ REST/WS (8080)
-                       ▼        ▼       │
-              ┌──────────┐   ┌──────────┴─┐      ┌───────┐
-              │ QuestDB  │   │ dashboard- │◀─────│ Caddy │◀── https://TWIN_HOST
-              │historian │   │ ui (React) │      │ TLS + │    (basic auth)
-              └──────────┘   └────────────┘      │ auth  │
-                                                 └───────┘
-```
-
-**Data flow**
-
-1. The simulator produces FlatBuffers readings on `sensor_raw` (2,000 msg/s).
-2. `middleware-core` consumes, validates, and aggregates them: one row per
-   machine per second into QuestDB (ILP), plus a downsampled stream on
-   `sensor_clean` for the ML service.
-3. `predictive-ml` builds 10-second feature windows, scores them with an
-   Isolation Forest, and publishes a throttle command on `machine_control`.
-4. The simulator obeys the command — the fault decays, the machine recovers.
-5. The dashboard talks only to `middleware-core` over REST and a WebSocket.
-
-### Design decisions worth knowing
-
-- **FlatBuffers on the hot path, JSON everywhere else.** `sensor_raw` and
-  `sensor_clean` carry zero-parse binary payloads; the low-frequency control and
-  event topics are JSON so they stay debuggable with `rpk topic consume`.
-- **One writer.** Only `middleware-core` writes to QuestDB, which keeps the
-  historian schema under a single owner.
-- **The hot path never blocks.** The producer drops rather than back-pressures,
-  the ILP writer discards rather than stalls, and slow WebSocket clients are
-  disconnected. A dashboard on a bad connection cannot slow down ingestion.
-- **The model is not load-bearing on its own.** A deterministic vibration guard
-  runs alongside it, so the healing chain still works during warmup or if the
-  model misbehaves — but the calibration ensures the *model* fires first, which
-  is what buys the prediction window.
-- **Stateless services.** Consumer groups and per-machine partition keys, no
-  local state that cannot be rebuilt from the topics.
-
-## Quick start
-
-Requirements: Docker with Compose v2, ~4 CPU cores and ~8 GB RAM free.
+## Tests
 
 ```bash
-cp .env.example .env          # defaults work as-is for local use
-make up-infra                 # Redpanda, QuestDB, Console, topics
-make smoke-infra              # verifies broker, topics, ILP write path
-
-make codegen                  # FlatBuffers code for Go/Rust/Python
-make up                       # build and start everything
-make ps                       # all health checks green?
-make smoke-sim                # simulator producing at the target rate?
+uv venv .venv
+uv pip install --python .venv/bin/python pytest pytest-asyncio pyyaml ruff
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m ruff check packages/ tests/ data/
 ```
 
-Wait ~70 s for the ML warmup to finish, then run the test that matters:
+Die Tests laufen offline in Simulationszeit, ohne Broker und ohne Datenbank.
+
+Der wichtigste ist
+`test_f1_pflanzt_sich_ueber_das_material_bis_zur_kapazitaet_fort`: er prüft
+jedes Glied der Kette einzeln. Fällt er durch, hat der Diagnose-Agent später
+nichts zu finden — dann sind die sechs Stationen nur unabhängige
+Zufallsgeneratoren.
+
+Ebenso bewusst gesetzt: `test_f4_senkt_kapazitaet_ohne_die_porositaet_anzufassen`
+schlägt fehl, sobald F4 die Porosität mitzieht. Dann wäre es nicht mehr von F1
+unterscheidbar, und die Triage-Aufgabe wäre trivial statt echt.
+
+Lastmessung gegen den laufenden Stack:
 
 ```bash
-make test-healing
+docker compose exec ingest python -m tests.load.ingest_load --rate 5000 --sekunden 30
 ```
 
-It injects a hardware fault, prints a live timeline, and passes only if the
-machine was throttled within 60 s, never reached 85 °C, and returned to `OK`.
+---
 
-```
-== Observing self-healing (timeline, every 3 s) ==
-  t+  0s  M1  status=OK         vib=2.53 mm/s  temp=62.9 °C
-  t+ 20s  M1  status=OK         vib=4.89 mm/s  temp=64.9 °C
-  t+ 24s  M1  status=THROTTLED  vib=4.68 mm/s  temp=65.6 °C
-  ...
-  t+149s  M1  status=OK         vib=1.94 mm/s  temp=61.7 °C
+## Konfiguration
 
-PASS — anomaly detected -> throttled (t+24s) -> healed (t+149s), peak 66.5 °C
-```
+Alles in `.env` (siehe `.env.example`): Zugangsdaten, Standort, Takt und
+Zeitraffer, Modellwahl, öffentliche Adressen.
 
-### Useful commands
+**Wichtig zu wissen:** `ZW_GRAFANA_PASSWORD` und `ZW_EMQX_PASSWORD` wirken **nur
+beim ersten Start eines frischen Volumes**. Besteht das Volume bereits, kommt
+der Container sauber mit gesetzter Variable hoch — und es gilt trotzdem das alte
+Passwort. An einer bestehenden Installation:
 
 ```bash
-make logs s=middleware-core   # follow one service
-make stats                    # live rates (in/clean/db rows/s)
-make topics                   # topics and high watermarks
-make nuke                     # remove everything including volumes
+docker compose exec grafana grafana cli admin reset-admin-password <neues>
+docker compose exec emqx emqx ctl admins passwd admin <neues>
 ```
 
-## The dashboard
+Der Zeitraffer `ZW_SPEED` muss in der `environment`-Sektion des Dienstes stehen
+— ohne Eintrag erreicht ein `ZW_SPEED=30 docker compose up` den Container nicht,
+und die Fabrik läuft weiter in Echtzeit, ohne jede Fehlermeldung.
 
-Three views, all fed by a single WebSocket with automatic reconnect and snapshot
-resync. React re-renders are throttled to 4 Hz while telemetry arrives at 40
-frames per second, so the page stays smooth.
+---
 
-**SCADA Live** — machine cards with status-coloured borders, a pulse indicator
-per received frame, and 60-point SVG sparklines (no charting library). A
-throttled or failed machine gets a reset button: both states clear themselves
-after ~120 s, but nobody wants to wait that out during a demo.
+## Betrieb hinter einem Reverse-Proxy
 
-![SCADA Live](docs/screenshots/scada-live.png)
+Das `edge`-Profil startet einen Caddy, der die Dienste unter eigenen Hostnamen
+ausliefert. Alle Site-Adressen im `Caddyfile` tragen bewusst das Präfix
+`http://`: TLS terminiert der **vorgelagerte** Proxy. Ohne dieses Präfix leitet
+Caddy jede Anfrage mit 308 auf https um, und die beiden Proxys laufen im Kreis.
 
-**MES/ERP Log** — order table with progress bars and a per-machine sensor-batch
-counter, plus the latest anomaly score per machine.
+**Grafana und EMQX stehen NICHT hinter Basic Auth.** Beide bringen ein eigenes
+Login mit und beantworten nicht angemeldete Aufrufe selbst mit `401` und
+`WWW-Authenticate`. Steht davor noch Basic Auth, hält der Browser das für eine
+erneute Aufforderung und zeigt den Anmeldedialog endlos — eine Schleife, die nur
+mit Abbruch und 401 endet.
 
-![MES Log](docs/screenshots/mes-log.png)
+Grafana braucht außerdem `GF_SERVER_ROOT_URL` mit der öffentlichen Adresse,
+sonst zeigen Weiterleitungen nach dem Login auf den internen Containernamen.
 
-## Services
+Standardmäßig zeigt Grafana nach dem Login seine Willkommensseite — mit „Add
+your first data source". Das sieht aus wie eine leere Neuinstallation, obwohl
+alles provisioniert ist. `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` setzt
+stattdessen das Linien-Dashboard als Startseite.
 
-| Service | Stack | Role |
-|---|---|---|
-| `factory-simulator` | Go 1.23, franz-go | Ornstein–Uhlenbeck physics for 8 machines, vibration→temperature coupling, fault profiles, MES order generation, reacts to control commands |
-| `middleware-core` | Rust, rdkafka, axum, tokio | Validation, 1-second aggregates, QuestDB ILP writer with reconnect, downsampling, REST + WebSocket API |
-| `predictive-ml` | Python 3.12, scikit-learn | Sliding feature windows, Isolation Forest with calibrated threshold, deterministic guard, cooldown and escalation logic |
-| `dashboard-ui` | React 18, Vite, TypeScript, Tailwind | Three live views, served as a static bundle by nginx |
+---
 
-Each backend image ships a `selfcheck` executable used by the Compose health
-checks, so a container is only "healthy" once its own endpoint answers.
+## LLM-Zugang
 
-## Data contracts
+Die Agenten sprechen nicht direkt mit einer Modell-API, sondern über den Dienst
+`zellwerk-llm`. Er stellt `POST /v1/messages` im Anthropic-Format bereit, sodass
+das offizielle SDK unverändert benutzbar bleibt — es zeigt lediglich auf eine
+andere Basis-URL:
 
-`schemas/sensor_reading.fbs` defines the hot-path payload (`file_identifier
-"SNR1"`). Generated code for all three languages is committed; regenerate with
-`make codegen` after changing the schema.
-
-| Topic | Partitions | Format | Producer → Consumer |
-|---|---|---|---|
-| `sensor_raw` | 16 | FlatBuffers | simulator → middleware-core |
-| `sensor_clean` | 16 | FlatBuffers | middleware-core → predictive-ml |
-| `mes_orders` | 3 | JSON | simulator → middleware-core |
-| `machine_control` | 3 | JSON | ml + core → simulator |
-| `system_events` | 3 | JSON | ml + simulator → middleware-core |
-
-Kafka keys are the ASCII decimal machine id, so all readings of one machine land
-on the same partition and stay ordered.
-
-**REST** (`middleware-core`, port 8080): `/api/health`, `/api/machines`,
-`/api/orders`, `/api/events`, `/api/stats`, `POST /api/control`.
-**WebSocket** (`/ws`): one `snapshot` frame on connect, then `telemetry`,
-`event`, `order` and 1 Hz `stats` frames.
-
-## Testing
-
-```bash
-# Go — physics and MES logic (fast-forwarded simulation time, no sleeps)
-docker run --rm -v "$PWD/services/factory-simulator:/s" -w /s golang:1.23-alpine go test ./...
-
-# Rust — validation, aggregation, ILP line format
-docker run --rm -v "$PWD/services/middleware-core:/s" -w /s rust:1.85-bookworm cargo test
-
-# Python — features, detection scenario, actor contracts
-docker run --rm -v "$PWD/services/predictive-ml:/s" -w /s python:3.12-slim \
-  sh -c "pip install -q -r requirements.txt pytest && python -m pytest -q tests/"
+```python
+from anthropic import Anthropic
+client = Anthropic(base_url=os.environ["ZW_LLM_BASE_URL"], api_key="unused")
 ```
 
-The Python suite includes the two tests that actually pin the behaviour: a
-scenario test that must detect a ramp within 20 s, and a false-positive test
-that runs 10 minutes of normal operation across three random seeds and must
-raise **zero** alarms.
+Der Dienst ist ein **rein passiver Leser**: er benutzt ein Zugangstoken, das ihm
+von außen bereitgestellt wird, und erneuert es **niemals selbst**. Der Grund ist
+keine Stilfrage — eine Erneuerung liefert ein neues Refresh-Token und macht das
+alte serverseitig ungültig. Ein zweiter Prozess, der dasselbe Token erneuert,
+legt damit den ersten lahm. Wer diesen Dienst nachbaut, sollte diese Eigenschaft
+beibehalten.
 
-`services/predictive-ml/tools/calibrate.py` sweeps the detection threshold and
-prints both sides of the trade-off, which is how the current value was chosen
-rather than guessed:
+Wie das Token in den Container kommt, ist bewusst nicht Teil dieses Repos: das
+hängt von der jeweiligen Umgebung ab. Der Dienst erwartet es unter
+`/creds/creds.json` im Format `{"claudeAiOauth": {"accessToken": …,
+"expiresAt": …}}` und meldet über `/health` ehrlich rot, solange keins vorliegt.
 
-```
- margin  threshold  false alarms  detected_s  guard?
-    0.0     +0.032            19         9.9   False
-    1.0     -0.069             3         9.9   False
-    1.5     -0.122             0        16.2   False   <- chosen
-    2.0     -0.157             0        24.6   True    <- only the guard fires
-```
+---
 
-## Configuration
+## Entwurfsentscheidungen, die den Unterschied machen
 
-All tuning lives in `.env` (see `.env.example`): machine count, target rate,
-downsample and WebSocket rates, ML warmup, cooldown and guard threshold.
+**Der Konnektor weiß nichts über Batterien.** Was er abonniert und wohin er
+publiziert, steht vollständig in `packages/connector/config.yaml`. Im echten
+Einsatz zeigen dieselben Einträge auf reale Steuerungen — nichts am Code ändert
+sich.
 
-## Exposing the stack
+**Der Sekundenpfad kennt kein Sprachmodell.** Edge-Regeln werden deterministisch
+im MQTT-Strom ausgewertet, ohne Datenbank-Roundtrip. Ein Modell im
+Sicherheitspfad wäre weder schnell noch reproduzierbar. Die KI darf Regeln
+*vorschlagen* — einführen darf sie ein Mensch.
 
-The `edge` profile runs Caddy, which terminates TLS and enforces basic auth for
-all three hostnames:
+**Ein Bad-StatusCode ist eine Aussage, kein Fehler.** asyncua wirft bei einem
+`Bad`-Status eine Exception. Behandelt man die als Lesefehler und überspringt
+den Wert, verstummt ein ausgefallener Kanal stillschweigend — und ist von einer
+echten Störung nicht mehr zu unterscheiden. Genau diese Unterscheidung ist das
+Akzeptanzkriterium des Formierungs-Playbooks.
 
-```bash
-make hash-password pw='YOUR_PASSWORD'   # paste the hash into .env
-docker compose --profile edge up -d caddy
-```
+**Alarme werden entprellt** (`packages/core/events`). Ein Alarmsystem, das jede
+Grenzverletzung einzeln meldet, erzeugt bei einem schwankenden Messwert hunderte
+Einträge — und wird deshalb ignoriert. Genau dann ist es wertlos, wenn es
+gebraucht wird. Die Ereignisschicht zählt Wiederholungen am bestehenden Eintrag
+hoch statt neue Zeilen anzulegen, hält den auslösenden Messwert als Kontext fest
+und kennt einen Lebenszyklus: `get_active_alarms` zeigt nur, was noch offen
+ist.
 
-Two things that will cost you an hour if you hit them blind:
+**Zeitstempel sind Wanduhrzeit, auch im Zeitraffer.** Trüge ein Los seine
+Simulationszeit, liefen die Achsen auseinander, und die Abfrage „Prozesswerte im
+Fertigungszeitraum dieses Loses" fände nichts.
 
-- **Escape `$` as `$$` in the bcrypt hash** inside `.env`. Compose otherwise
-  interprets `$2a$14$...` as variable references and silently shortens the hash
-  from 60 to 40 characters — every login then fails with 401 despite the correct
-  password.
-- **Behind an existing reverse proxy**, publish the edge on alternative ports
-  and prefix the site addresses in the `Caddyfile` with `http://`. Without that
-  prefix Caddy answers the upstream proxy with a 308 redirect to https and the
-  two proxies loop.
+**Die Fertigung hält nicht an, wenn das ERP hakt.** Der Auftragsclient ist
+fehlertolerant: fällt das ERP aus, produziert die Fabrik ohne Auftragsbezug
+weiter. Der Ausfall wird protokolliert, nicht verschluckt.
 
-## Engineering notes
+`docs/decisions.md` hält fest, wo und warum die Umsetzung von der Spezifikation
+abweicht — unter anderem, dass die Formierungs-Templates synthetisch aus
+veröffentlichten Kennwerten erzeugt und nicht aus einem Messdatensatz abgeleitet
+werden. Solche Abweichungen gehören dokumentiert, nicht stillschweigend gemacht.
 
-A few defects that only surfaced against the running system, kept here because
-they generalise:
+`docs/demo-drehbuch.md` beschreibt einen vollständigen Vorführungsablauf in fünf
+Akten, mit den Sätzen dazu — und einem Abschnitt „Was man nicht behaupten
+sollte".
 
-- **A dead database looked healthy.** `write_all` on a closed ILP socket keeps
-  returning `Ok` — the kernel buffers the bytes. `/api/stats` therefore reported
-  a steady `db_rows_s: 8` while rows were being lost. The writer now probes the
-  peer before each batch and reports `db_dropped_total`. An outage your metrics
-  do not show is worse than the outage.
-- **A screenshot caught what tests could not.** The order table listed the same
-  order four times with 0 %, 52 % and 100 % simultaneously: the snapshot carries
-  every status message, and only the live frames were being deduplicated.
-- **Escalation fired reflexively.** The healing chain escalated to a harder
-  throttle four seconds after the first one — while vibration was already
-  falling. The 10-second averaging window simply lagged behind the action, so
-  the guard stayed tripped. Escalation now requires the window to have refreshed
-  *and* vibration not to be decreasing.
-- **The model was silently sidelined.** With too wide a safety margin the
-  threshold fell below the score range the Isolation Forest can produce, so
-  detection quietly degraded to the deterministic guard alone — everything still
-  "passed", just 8 seconds later and without any prediction.
-- **The warmup calibrated on almost nothing.** It ended after a fixed 60 seconds
-  of wall-clock time regardless of what arrived. When the service restarted while
-  the factory happened to be stopped, it trained on 26 windows instead of ~200
-  and produced a threshold worth roughly three false alarms per ten minutes —
-  latent, and only visible once the factory ran again. The warmup now counts
-  productive time only and additionally requires a minimum number of windows.
+---
 
-## Licence
+## Lizenz
 
-MIT — see [LICENSE](LICENSE).
+MIT — siehe [LICENSE](LICENSE).

@@ -1,22 +1,22 @@
-# ============================================================================
-# V4Smart Factory Digital Twin — APP-STACK
-# ----------------------------------------------------------------------------
-# Läuft KOMPLETT in der inneren Docker-Engine (DinD). Projektname: v4smart
-#
+# =============================================================================
+# zellwerk — Digitale Musterfabrik + KI-native Middleware (SPEC.md §3)
+# -----------------------------------------------------------------------------
 # Profile:
-#   (ohne Profil)   Infrastruktur: redpanda, redpanda-init, questdb, console
-#   app             factory-simulator, middleware-core, predictive-ml, dashboard-ui
-#   edge            caddy (öffentliche URL, TLS via Let's Encrypt, Basic Auth)
+#   sim    Musterfabrik: 6 OPC-UA-Stationen + Mock-ERP
+#   core   UNS (EMQX), TimescaleDB, Konnektor, Ingest
+#   obs    Grafana
+#   ai     zellwerk-llm (LLM-Zugang) + MCP-Server + Agenten
 #
-#   make up-infra   → nur Infrastruktur (funktioniert ab Tag 1)
-#   make up         → alles (sobald die Services gebaut sind)
+#   make up      → sim + core + obs (die Fabrik läuft und wird sichtbar)
+#   make up-ai   → zusätzlich die KI-Schicht
 #
-# Netz-Design:
-#   backend  = internal (kein Internet) — der gesamte Datenpfad
-#   edge     = normal (Caddy braucht Egress für ACME/Let's Encrypt)
-#   Es werden KEINE Ports publiziert außer 80/443 am Caddy.
-# ============================================================================
-name: v4smart
+# Netzentwurf (docs/decisions.md D3):
+#   backend  internal: true — KEIN Internet. Hier hängt alles.
+#   egress   normal        — hier hängt AUSSCHLIESSLICH zellwerk-llm.
+# Damit gibt es genau einen kontrollierten Weg nach draußen, und der führt zu
+# api.anthropic.com. Kein anderer Dienst kann versehentlich telefonieren.
+# =============================================================================
+name: zellwerk
 
 x-common: &common
   restart: unless-stopped
@@ -26,207 +26,308 @@ x-common: &common
       max-size: "10m"
       max-file: "3"
 
+x-python: &python
+  <<: *common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &pyenv
+    ZW_MQTT_HOST: emqx
+    ZW_MQTT_PORT: "1883"
+    ZW_DB_DSN: postgresql://zellwerk:${ZW_DB_PASSWORD:-zellwerk}@timescaledb:5432/zellwerk
+    ZW_SITE: ${ZW_SITE:-werk1}
+    # Takt und Zeitraffer MÜSSEN hier stehen: ohne Eintrag erreicht ein
+    # `ZW_SPEED=30 docker compose up` den Container nicht, und die Fabrik läuft
+    # weiter in Echtzeit — ohne jede Fehlermeldung.
+    ZW_TICK_S: ${ZW_TICK_S:-1.0}
+    ZW_SPEED: ${ZW_SPEED:-1.0}
+    PYTHONUNBUFFERED: "1"
+
 networks:
   backend:
     internal: true
+  # Ausgehend: ausschließlich für den LLM-Zugang.
+  egress: {}
+  # Eingehend: für den Edge. Ein Container, der NUR in einem internal-Netz
+  # hängt, kann keine Ports veröffentlichen — Docker hat dann keine Route aus
+  # dem Host-Namespace, und der Container startet klaglos ohne Portbindung.
+  # Deshalb ein eigenes, nicht-internes Netz statt `egress` mitzubenutzen:
+  # der Edge soll erreichbar sein, aber selbst nicht ins Internet können.
   edge: {}
 
 volumes:
-  redpanda-data:
-  questdb-data:
+  timescale-data:
+  emqx-data:
+  grafana-data:
   caddy-data:
   caddy-config:
 
 services:
-  # ========================= INFRASTRUKTUR =========================
-  redpanda:
-    <<: *common
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
-    command:
-      - redpanda
-      - start
-      - --overprovisioned
-      - --smp=1
-      - --memory=1G
-      - --reserve-memory=0M
-      - --node-id=0
-      - --check=false
-      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
-    volumes:
-      - redpanda-data:/var/lib/redpanda/data
-    networks: [backend]
-    cpus: 2
-    mem_limit: 1536m
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.*true'"]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 20s
 
-  # Einmal-Job: legt alle Topics an (idempotent) und beendet sich.
-  redpanda-init:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
-    restart: "no"
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    entrypoint: ["bash", "/init/create_topics.sh"]
-    volumes:
-      - ./scripts/create_topics.sh:/init/create_topics.sh:ro
-    networks: [backend]
-
-  questdb:
+  # ---------------------------------------------------------------- UNS -----
+  # Broker und Datenbank tragen BEWUSST kein Profil: sie sind Infrastruktur, von
+  # der mehrere Profile abhängen. Lagen sie in `core`, brach `--profile sim`
+  # allein mit "depends on undefined service emqx" ab — eine Abhängigkeit über
+  # eine Profilgrenze hinweg ist in Compose kein gültiges Projekt.
+  emqx:
     <<: *common
-    image: questdb/questdb:8.1.1
+    image: emqx:5.8
+    container_name: zellwerk-emqx
+    networks: [backend]
     environment:
-      QDB_TELEMETRY_ENABLED: "false"
-      QDB_SHARED_WORKER_COUNT: "2"
-      QDB_PG_ENABLED: "false"        # PG-Wire aus; HTTP (9000) + ILP (9009) reichen
+      EMQX_NODE__COOKIE: zellwerk
+      # ÄNDERN, sobald der Broker von außen erreichbar ist. Diese Variable
+      # wirkt zudem NUR beim ersten Start eines frischen Volumes; an einer
+      # bestehenden Installation setzt man das Passwort mit
+      #   emqx ctl admins passwd admin <neues>
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${ZW_EMQX_PASSWORD:-zellwerk-demo}
     volumes:
-      - questdb-data:/var/lib/questdb
-    networks: [backend]
-    cpus: 2
-    mem_limit: 2g
+      - emqx-data:/opt/emqx/data
     healthcheck:
-      # TCP-Probe auf den HTTP-Port (Image ist Ubuntu-basiert, bash vorhanden).
-      # Falls das Image mal kein bash hat: auf 'service_started' ausweichen.
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000' || exit 1"]
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ------------------------------------------------------------ Datenbank ---
+  timescaledb:
+    <<: *common
+    image: timescale/timescaledb-ha:pg16
+    container_name: zellwerk-timescaledb
+    networks: [backend]
+    environment:
+      POSTGRES_DB: zellwerk
+      POSTGRES_USER: zellwerk
+      POSTGRES_PASSWORD: ${ZW_DB_PASSWORD:-zellwerk}
+    volumes:
+      - timescale-data:/home/postgres/pgdata
+      - ./packages/core/ingest/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zellwerk -d zellwerk"]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 15s
+      start_period: 30s
 
-  # Redpanda Console — Blick in Topics/Consumer-Groups (via console.<domain>)
-  console:
-    <<: *common
-    image: docker.redpanda.com/redpandadata/console:v2.7.2
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-    depends_on:
-      redpanda:
-        condition: service_healthy
+  # --------------------------------------------------------- Musterfabrik ---
+  # Alle sechs Stationen laufen in EINEM Container, jede als eigener
+  # OPC-UA-Server auf eigenem Port (4841–4846) — ein Prozess je Station wäre
+  # sechs fast identische Container für nichts.
+  simfactory:
+    <<: *python
+    container_name: zellwerk-simfactory
+    profiles: ["sim"]
     networks: [backend]
-    mem_limit: 256m
-
-  # ========================= APP-SERVICES =========================
-  # Kontrakt für alle drei Backend-Services (siehe CLAUDE.md §15):
-  # Das Image MUSS ein Executable `selfcheck` im PATH enthalten (Exit 0 = ok).
-
-  factory-simulator:
-    <<: *common
-    profiles: [app]
-    build:
-      context: ./services/factory-simulator
+    command: ["python", "-m", "simfactory.main"]
     environment:
-      KAFKA_BROKERS: redpanda:9092
-      MACHINE_COUNT: ${MACHINE_COUNT:-8}
-      TOTAL_RATE: ${TOTAL_RATE:-2000}
-      FACTORY_AUTO_START: ${FACTORY_AUTO_START:-true}
+      <<: *pyenv
+      ZW_ERP_URL: http://erp-mock:8000
+    ports: []
     depends_on:
-      redpanda:
+      emqx:
         condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
-    networks: [backend]
-    cpus: 1
-    mem_limit: 256m
     healthcheck:
-      test: ["CMD", "selfcheck"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  middleware-core:
-    <<: *common
-    profiles: [app]
-    build:
-      context: ./services/middleware-core
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-      QUESTDB_ILP_ADDR: questdb:9009
-      QUESTDB_HTTP: http://questdb:9000
-      MACHINE_COUNT: ${MACHINE_COUNT:-8}
-      DOWNSAMPLE_HZ: ${DOWNSAMPLE_HZ:-10}
-      WS_TELEMETRY_HZ: ${WS_TELEMETRY_HZ:-5}
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
-      questdb:
-        condition: service_started   # bewusst nicht "healthy": Core hat eigenen Reconnect
-    networks: [backend]
-    cpus: 2
-    mem_limit: 512m
-    healthcheck:
-      test: ["CMD", "selfcheck"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  predictive-ml:
-    <<: *common
-    profiles: [app]
-    build:
-      context: ./services/predictive-ml
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-      MACHINE_COUNT: ${MACHINE_COUNT:-8}
-      ML_WARMUP_S: ${ML_WARMUP_S:-60}
-      ML_COOLDOWN_S: ${ML_COOLDOWN_S:-45}
-      ML_VIB_GUARD: ${ML_VIB_GUARD:-4.5}
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
-    networks: [backend]
-    cpus: 1.5
-    mem_limit: 768m
-    healthcheck:
-      test: ["CMD", "selfcheck"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "python", "-m", "simfactory.selfcheck"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
       start_period: 20s
 
-  dashboard-ui:
-    <<: *common
-    profiles: [app]
-    build:
-      context: ./services/dashboard-ui
+  erp-mock:
+    <<: *python
+    container_name: zellwerk-erp-mock
+    profiles: ["sim"]
     networks: [backend]
-    mem_limit: 64m
+    command: ["uvicorn", "simfactory.erp_mock.main:app", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 15s
 
-  # ========================= EDGE (öffentliche URL) =========================
+  # ------------------------------------------------------------ Konnektor ---
+  connector:
+    <<: *python
+    container_name: zellwerk-connector
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "connector.main"]
+    volumes:
+      - ./packages/connector/config.yaml:/app/connector-config.yaml:ro
+    environment:
+      <<: *pyenv
+      ZW_CONNECTOR_CONFIG: /app/connector-config.yaml
+    depends_on:
+      emqx:
+        condition: service_healthy
+
+  # --------------------------------------------------------------- Ingest ---
+  ingest:
+    <<: *python
+    container_name: zellwerk-ingest
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "core.ingest.main"]
+    depends_on:
+      emqx:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  # ------------------------------------------------------------ Edge-Rules --
+  # Der deterministische <1s-Pfad (SPEC §8.3). Läuft bewusst als eigener Dienst
+  # neben dem Ingest: der Regelpfad darf nicht warten, bis ein Datenbankschreiber
+  # fertig ist.
+  rules:
+    <<: *python
+    container_name: zellwerk-rules
+    profiles: ["core"]
+    networks: [backend]
+    command: ["python", "-m", "core.rules.main"]
+    volumes:
+      - ./packages/core/rules/rules.yaml:/app/core/rules/rules.yaml:ro
+    depends_on:
+      emqx:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  # ----------------------------------------------------------- Sichtbarkeit -
+  grafana:
+    <<: *common
+    image: grafana/grafana-oss:11.3.0
+    container_name: zellwerk-grafana
+    profiles: ["obs"]
+    networks: [backend]
+    environment:
+      # ÄNDERN vor jedem Betrieb, der über den eigenen Rechner hinausgeht.
+      # Wirkt NUR beim ersten Start eines frischen Volumes; danach hilft nur
+      #   grafana cli admin reset-admin-password <neues>
+      GF_SECURITY_ADMIN_PASSWORD: ${ZW_GRAFANA_PASSWORD:-zellwerk-demo}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Hinter einem Reverse-Proxy MUSS Grafana seine öffentliche Adresse
+      # kennen, sonst zeigen Weiterleitungen nach dem Login auf den internen
+      # Containernamen und die Anmeldung endet im Nichts.
+      # Öffentliche Adresse — MUSS in der .env auf den eigenen Hostnamen
+      # gesetzt werden. Der Standard passt nur für den lokalen Betrieb; hinter
+      # einem Reverse-Proxy zeigen Weiterleitungen sonst ins Leere.
+      GF_SERVER_ROOT_URL: ${ZW_GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_SERVER_DOMAIN: ${ZW_GRAFANA_DOMAIN:-localhost}
+      # Der Proxy setzt X-Forwarded-*; ohne dieses Flag hält Grafana jede
+      # Anfrage für lokal und protokolliert die falsche Herkunft.
+      GF_SERVER_ENFORCE_DOMAIN: "false"
+      # Startseite ist das Linien-Dashboard, NICHT Grafanas Willkommensseite.
+      # Ohne das landet jeder nach dem Login auf "Welcome to Grafana" mit
+      # "Add your first data source" — das sieht aus wie eine leere
+      # Neuinstallation, obwohl Datenquelle und Dashboard längst da sind.
+      # Wer die Adresse aufruft, will die Anlage sehen, kein Tutorial.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/linie.json
+      # Werbe- und Neuigkeiten-Panels aus: sie holen Inhalte von außen, was in
+      # diesem Netz ohnehin nicht geht, und lenken vom Wesentlichen ab.
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # MUSS hier stehen: die provisionierte Datenquelle enthält
+      # `${ZW_DB_PASSWORD}`, und Grafana löst diesen Platzhalter aus SEINER
+      # eigenen Umgebung auf — nicht aus der von Compose. Fehlt die Variable,
+      # expandiert sie zu einem leeren Passwort. Die Datenquelle taucht dann
+      # in der Oberfläche völlig normal auf und jede Abfrage scheitert mit
+      # "password authentication failed".
+      ZW_DB_PASSWORD: ${ZW_DB_PASSWORD:-zellwerk}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./dashboards/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards/json:/var/lib/grafana/dashboards:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # -------------------------------------------------------------- KI-Schicht
+  # MCP-Server: stellt das Fabrikmodell als Werkzeuge bereit (SPEC §9).
+  # Läuft im SSE-Modus, damit Dienste im Compose-Netz ihn erreichen; für Claude
+  # Desktop/Code lässt sich dasselbe Modul über stdio starten.
+  mcpserver:
+    <<: *python
+    container_name: zellwerk-mcp
+    profiles: ["ai"]
+    networks: [backend]
+    command: ["python", "-m", "mcpserver.server", "--http"]
+    environment:
+      <<: *pyenv
+      ZW_LIVE_ACTIONS: ${ZW_LIVE_ACTIONS:-false}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # Die Agenten sind über HTTP erreichbar, nicht nur über die Kommandozeile.
+  # Ohne das wären sie in einer Vorführung unsichtbar — und der Agent, der eine
+  # Ursache findet und belegt, ist der eigentliche Gegenstand dieses Systems.
+  # Die Kommandozeile bleibt zusätzlich nutzbar:
+  #   docker compose exec agents python -m agents.runner triage
+  agents:
+    <<: *python
+    container_name: zellwerk-agents
+    profiles: ["ai"]
+    networks: [backend]
+    command: ["uvicorn", "agents.api:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      <<: *pyenv
+      ZW_LLM_BASE_URL: ${ZW_LLM_BASE_URL:-http://zellwerk-llm:4010}
+      ZW_MODEL: ${ZW_MODEL:-claude-haiku-4-5-20251001}
+      ZW_LIVE_ACTIONS: ${ZW_LIVE_ACTIONS:-false}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ Edge --
+  # Öffentliche URLs. Belegt in der inneren Engine 80/443 — dieselben Ports,
+  # die der Host auf 8090/8453 abbildet. Hat den Platz des vorherigen Projekts
+  # übernommen, weshalb auch dessen bisherige Adresse hier landet.
+  #
+  # `edge`-Profil: `make up` lässt den Stack rein intern laufen, erst
+  # `--profile edge` macht ihn öffentlich.
   caddy:
     <<: *common
-    profiles: [edge]
     image: caddy:2.8-alpine
+    container_name: zellwerk-caddy
+    profiles: ["edge"]
     ports:
-      # bindet an die INNERE Engine (dind); der Host mappt 80/443 darauf
       - "80:80"
       - "443:443"
     environment:
-      TWIN_HOST: ${TWIN_HOST:-}
-      CONSOLE_HOST: ${CONSOLE_HOST:-}
-      QUESTDB_HOST: ${QUESTDB_HOST:-}
+      ZELLWERK_HOST: ${ZELLWERK_HOST:-}
+      LEGACY_HOST: ${LEGACY_HOST:-}
+      CONSOLE_HOST: ${ZW_CONSOLE_HOST:-}
+      AGENTS_HOST: ${ZW_AGENTS_HOST:-}
+      FACTORY_HOST: ${ZW_FACTORY_HOST:-}
       ACME_EMAIL: ${ACME_EMAIL:-}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
       BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data          # Zertifikate — bleiben über Neustarts erhalten
+      - caddy-data:/data
       - caddy-config:/config
-    networks: [edge, backend]
+    # `edge` für die Erreichbarkeit von außen, `backend` um die Dienste zu
+    # erreichen. NICHT `egress` — der Edge soll keine ausgehende Verbindung
+    # aufbauen können; diese Tür bleibt dem LLM-Zugang vorbehalten.
+    networks: [backend, edge]
     mem_limit: 256m
+
+  # Der EINZIGE Dienst mit einem Bein im egress-Netz. Siehe decisions.md D1/D3.
+  zellwerk-llm:
+    <<: *common
+    build:
+      context: ./services/zellwerk-llm
+    container_name: zellwerk-llm
+    profiles: ["ai"]
+    networks: [backend, egress]
+    environment:
+      ZELLWERK_MODEL: ${ZW_MODEL:-claude-haiku-4-5-20251001}
+    # Der Token liegt ausschließlich im RAM. Nach einem Neustart ist er weg;
+    # zellwerk-creds-sync (systemd-Timer auf dem Host, alle 5 min) legt ihn neu
+    # ab. Bis dahin meldet /health ehrlich rot statt still zu scheitern.
+    tmpfs:
+      - /creds
