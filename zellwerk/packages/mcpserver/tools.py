@@ -83,6 +83,11 @@ async def get_factory_overview() -> dict:
         "lose_gesamt": lose,
         "letzter_messwert": letzte.isoformat() if letzte else None,
     }
+    if not zellen and not lose:
+        ergebnis["hinweis"] = (
+            "Es sind noch keine Chargen oder Zellen erfasst. Die Fabrik läuft "
+            "vermutlich erst kurz — die erste Zelle durchläuft alle sechs "
+            "Stationen in etwa 50 Minuten. Messwerte liegen dagegen sofort vor.")
     await _audit("get_factory_overview", {}, ergebnis={"anlagen": len(assets),
                                                        "alarme": len(alarme)})
     return ergebnis
@@ -136,10 +141,10 @@ async def query_timeseries(asset_id: str, name: str, minuten: int = 60,
     Punkte geliefert, damit eine Anfrage nicht das Kontextfenster des Agenten
     sprengt.
     """
-    p = await pool()
+    p_pool = await pool()
     seit = datetime.now(UTC) - timedelta(minutes=minuten)
 
-    async with p.acquire() as conn:
+    async with p_pool.acquire() as conn:
         if agg in ("minute", "5min"):
             eimer = "1 minute" if agg == "minute" else "5 minutes"
             zeilen = await conn.fetch(
@@ -174,6 +179,36 @@ async def query_timeseries(asset_id: str, name: str, minuten: int = 60,
             "streuung": round(stats["streuung"], 4) if stats["streuung"] else None,
         },
     }
+    # Eine leere Zeitreihe hat zwei sehr verschiedene Ursachen: der Name ist
+    # falsch geschrieben, oder im Zeitraum gab es schlicht keine Werte. Ohne
+    # diese Unterscheidung probiert der Aufrufer den Namen endlos anders —
+    # und genau das führte hier schon einmal ins Rundenlimit.
+    if not punkte:
+        async with p_pool.acquire() as conn:
+            bekannt = await conn.fetch(
+                "SELECT DISTINCT name FROM measurement WHERE asset_id = $1"
+                " ORDER BY name LIMIT 40", asset_id)
+            juengster = await conn.fetchval(
+                "SELECT max(ts) FROM measurement WHERE asset_id = $1", asset_id)
+        namen = [r["name"] for r in bekannt]
+        if not namen:
+            ergebnis["hinweis"] = (
+                f"Für die Anlage '{asset_id}' liegen überhaupt keine Messwerte vor. "
+                "Stimmt die Anlagenkennung? Gültig sind: mixer01, coater01, "
+                "calender01, assembly01, filling01, formation01.")
+        elif name not in namen:
+            ergebnis["hinweis"] = (
+                f"Die Kennzahl '{name}' gibt es an dieser Anlage nicht. "
+                "Dieselbe Abfrage zu wiederholen ändert nichts — siehe die Liste "
+                "der tatsächlich vorhandenen Kennzahlen.")
+            ergebnis["vorhandene_kennzahlen"] = namen
+        else:
+            ergebnis["hinweis"] = (
+                f"Die Kennzahl existiert, hat aber in den letzten {minuten} Minuten "
+                "keine Werte. Ein größerer Zeitraum könnte welche enthalten; "
+                f"der jüngste Wert stammt von "
+                f"{juengster.isoformat() if juengster else 'unbekannt'}.")
+
     await _audit("query_timeseries", {"asset_id": asset_id, "name": name, "minuten": minuten},
                  ergebnis={"punkte": len(punkte)})
     return ergebnis
@@ -420,6 +455,13 @@ async def get_active_alarms(severity: str | None = None, limit: int = 50) -> dic
         })
 
     ergebnis = {"anzahl": len(alarme), "alarme": alarme}
+    if not alarme:
+        ergebnis["hinweis"] = (
+            "Es gibt derzeit keine offenen Ereignisse. Das ist eine vollständige "
+            "Auskunft: die Anlage meldet nichts. Eine auffällige Lage kann "
+            "trotzdem bestehen, bevor eine Regel greift — dafür lohnt der Blick "
+            "auf die Prozessfenster der Stationen."
+            + (f" (Gefiltert nach Schwere '{severity}'.)" if severity else ""))
     await _audit("get_active_alarms", {"severity": severity}, ergebnis={"anzahl": len(alarme)})
     return ergebnis
 
