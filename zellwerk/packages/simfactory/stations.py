@@ -86,6 +86,8 @@ class Mixer(Station):
     _batch_elapsed: float = 0.0
     current_lot: Lot | None = None
     finished_lots: list[Lot] = field(default_factory=list)
+    # Vom Auftragssystem gesetzt (SPEC §7.1); None = Fertigung ohne Auftragsbezug.
+    active_order: str | None = None
 
     def viskositaet(self, now: datetime) -> float:
         """Basisviskosität 4,0 Pa·s.
@@ -109,7 +111,8 @@ class Mixer(Station):
         self._batch_elapsed += self.tick_s / 60.0
         if self.current_lot is None:
             self.current_lot = Lot.create(
-                "mixer01", "slurry", now, prefix="SLURRY", viskositaet_pas=visk
+                "mixer01", "slurry", now, prefix="SLURRY",
+                order_id=self.active_order, viskositaet_pas=visk
             )
             self._batch_elapsed = 0.0
         else:

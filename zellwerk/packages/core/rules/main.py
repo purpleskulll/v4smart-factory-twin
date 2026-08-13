@@ -12,11 +12,11 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
 
 import aiomqtt
 import asyncpg
 
+from ..events.store import EventStore
 from .engine import RuleEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -56,20 +56,21 @@ class Latenz:
 LATENZ = Latenz()
 
 
-async def log_event(pool: asyncpg.Pool, asset: str, severity: str,
+async def log_event(store: EventStore, asset: str, severity: str,
                     code: str, payload: dict) -> None:
+    """Meldet ein Ereignis über die Ereignisschicht.
+
+    Der Umweg über den EventStore statt eines direkten INSERT ist der Grund,
+    warum ein schwankender Messwert nicht hunderte Einträge erzeugt: dort wird
+    entprellt und am bestehenden Eintrag hochgezählt.
+    """
     try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO event (ts, asset_id, severity, code, payload)"
-                " VALUES ($1,$2,$3,$4,$5)",
-                datetime.now(UTC), asset, severity, code, json.dumps(payload),
-            )
+        await store.emit(code, severity, asset, payload)
     except Exception as exc:  # noqa: BLE001
         log.warning("Ereignis %s konnte nicht gespeichert werden: %s", code, exc)
 
 
-async def run(engine: RuleEngine, pool: asyncpg.Pool) -> None:
+async def run(engine: RuleEngine, store: EventStore) -> None:
     async with aiomqtt.Client(MQTT_HOST, MQTT_PORT) as client:
         await client.subscribe("zellwerk/v1/+/+/+/+/pv/#")
         log.info("Regelwerk aktiv: %d Regeln", len(engine.rules))
@@ -103,7 +104,7 @@ async def run(engine: RuleEngine, pool: asyncpg.Pool) -> None:
                         )
                     elif action.kind == "event":
                         await log_event(
-                            pool, station, action.severity or "warn", action.code or "UNBEKANNT",
+                            store, station, action.severity or "warn", action.code or "UNBEKANNT",
                             {"regel": trigger.rule_id, "topic": topic, "wert": trigger.value,
                              "gehalten_s": round(trigger.held_for_s, 1)},
                         )
@@ -131,10 +132,11 @@ async def main() -> None:
     if pool is None:
         raise SystemExit("Datenbank nicht erreichbar — Abbruch")
 
+    store = EventStore(pool)
     asyncio.create_task(report())
     while True:
         try:
-            await run(engine, pool)
+            await run(engine, store)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

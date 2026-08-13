@@ -82,6 +82,10 @@ class Lot:
     started_at: datetime
     parent_id: str | None = None
     finished_at: datetime | None = None
+    # Auftragsbezug (SPEC §7.1). Wird an der Wurzel gesetzt und über alle
+    # Fertigungsstufen weitervererbt — sonst ließe sich später nicht sagen,
+    # für welchen Auftrag eine auffällige Charge gefahren wurde.
+    order_id: str | None = None
     traits: dict[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -92,6 +96,7 @@ class Lot:
         now: datetime,
         parent: Lot | None = None,
         prefix: str = "L",
+        order_id: str | None = None,
         **traits: float,
     ) -> Lot:
         lot = cls(
@@ -100,6 +105,8 @@ class Lot:
             material=material,
             started_at=now,
             parent_id=parent.id if parent else None,
+            # Auftrag der Vorstufe erben, falls keiner mitgegeben wurde.
+            order_id=order_id or (parent.order_id if parent else None),
             traits=dict(traits),
         )
         # Merkmale der Vorstufe erben, sofern die neue Stufe sie nicht überschreibt.
@@ -119,12 +126,14 @@ class Cell:
     created_at: datetime
     status: str = "in_prozess"  # in_prozess | ok | ausschuss | quarantaene
     grade: str | None = None
+    order_id: str | None = None
     traits: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def create(cls, lot: Lot, now: datetime) -> Cell:
         serial = f"ZW-{now.year}-{next(_CELL_COUNTER):06d}"
-        cell = cls(serial=serial, lot_id=lot.id, created_at=now, traits=dict(lot.traits))
+        cell = cls(serial=serial, lot_id=lot.id, created_at=now,
+                   order_id=lot.order_id, traits=dict(lot.traits))
         return cell
 
 

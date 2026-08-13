@@ -105,15 +105,32 @@ async def handle_trace(pool: asyncpg.Pool, name: str, payload: dict) -> None:
     """Genealogie-Meldungen ins semantische Modell (SPEC §6.2)."""
     value = payload.get("value") or {}
     async with pool.acquire() as conn:
-        if name == "lot":
+        if name == "order":
             await conn.execute(
-                "INSERT INTO lot (id, station, material, parent_id, start_ts, traits)"
-                " VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO UPDATE"
-                " SET traits = EXCLUDED.traits",
+                "INSERT INTO production_order (id, produkt, sollmenge, status)"
+                " VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE"
+                " SET status = EXCLUDED.status",
+                value.get("order_id"), value.get("produkt", "unbekannt"),
+                int(value.get("sollmenge", 0)), value.get("status", "laufend"),
+            )
+        elif name == "lot":
+            # Sicherungsnetz: fehlt der Auftrag (z. B. weil der Ingest nach dem
+            # Simulator startete), wird er minimal angelegt. Ohne das würde der
+            # Fremdschlüssel greifen und das Los ginge lautlos verloren.
+            if value.get("order_id"):
+                await conn.execute(
+                    "INSERT INTO production_order (id, produkt, sollmenge, status)"
+                    " VALUES ($1,'unbekannt',0,'laufend') ON CONFLICT (id) DO NOTHING",
+                    value["order_id"])
+            await conn.execute(
+                "INSERT INTO lot (id, station, material, parent_id, start_ts, traits, order_id)"
+                " VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO UPDATE"
+                " SET traits = EXCLUDED.traits, order_id = EXCLUDED.order_id",
                 value.get("lot_id"), value.get("station"), value.get("material"),
                 value.get("parent_id"),
                 datetime.fromisoformat(payload["ts"]) if payload.get("ts") else datetime.now(UTC),
                 json.dumps(value.get("traits", {})),
+                value.get("order_id"),
             )
             if value.get("parent_id"):
                 await conn.execute(
@@ -123,14 +140,15 @@ async def handle_trace(pool: asyncpg.Pool, name: str, payload: dict) -> None:
                 )
         elif name == "cell":
             await conn.execute(
-                "INSERT INTO cell (serial, lot_id, status, grade, created_at, traits)"
-                " VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (serial) DO UPDATE"
+                "INSERT INTO cell (serial, lot_id, status, grade, created_at, traits, order_id)"
+                " VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (serial) DO UPDATE"
                 " SET status = EXCLUDED.status, grade = EXCLUDED.grade,"
-                "     traits = EXCLUDED.traits",
+                "     traits = EXCLUDED.traits, order_id = EXCLUDED.order_id",
                 value.get("serial"), value.get("lot_id"),
                 value.get("status", "in_prozess"), value.get("grade"),
                 datetime.fromisoformat(payload["ts"]) if payload.get("ts") else datetime.now(UTC),
                 json.dumps(value.get("traits", {})),
+                value.get("order_id"),
             )
             await conn.execute(
                 "INSERT INTO genealogy (parent_kind, parent_id, child_kind, child_id)"

@@ -48,11 +48,16 @@ CREATE INDEX IF NOT EXISTS lot_station_idx ON lot(station);
 CREATE TABLE IF NOT EXISTS cell (
     serial      TEXT PRIMARY KEY,
     lot_id      TEXT REFERENCES lot(id),
+    -- Auftragsbezug (SPEC §7.1): an der Zelle gespiegelt, damit die häufigste
+    -- Frage der Fertigung — "welche Zellen gehören zu Auftrag X?" — ohne
+    -- rekursiven Genealogie-Durchlauf beantwortbar ist.
+    order_id    TEXT,
     status      TEXT NOT NULL DEFAULT 'in_prozess',
     grade       TEXT,
     created_at  TIMESTAMPTZ NOT NULL,
     traits      JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE INDEX IF NOT EXISTS cell_order_idx ON cell(order_id);
 CREATE INDEX IF NOT EXISTS cell_lot_idx    ON cell(lot_id);
 CREATE INDEX IF NOT EXISTS cell_status_idx ON cell(status);
 
@@ -150,3 +155,8 @@ INSERT INTO asset (id, typ, site, area, line, opc_endpoint) VALUES
     ('filling01',   'filling',   'werk1', 'zelle',     'linie1', 'opc.tcp://simfactory:4845/zellwerk/filling01'),
     ('formation01', 'formation', 'werk1', 'zelle',     'linie1', 'opc.tcp://simfactory:4846/zellwerk/formation01')
 ON CONFLICT (id) DO NOTHING;
+
+-- Nachträglich ergänzt: bestehende Installationen bekommen die Spalte, ohne
+-- dass die Datenbank neu aufgesetzt werden muss.
+ALTER TABLE cell ADD COLUMN IF NOT EXISTS order_id TEXT;
+CREATE INDEX IF NOT EXISTS cell_order_idx ON cell(order_id);

@@ -25,6 +25,7 @@ import aiomqtt
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
+from .erp_client import ErpClient
 from .opcua_layer import StationServer
 from .stations import Factory
 
@@ -38,6 +39,7 @@ TICK_S = float(os.environ.get("ZW_TICK_S", "1.0"))
 # Zeitraffer: 1.0 = Echtzeit. Für Demos lässt sich die Fabrik beschleunigen,
 # ohne die Prozesslogik anzufassen.
 SPEED = float(os.environ.get("ZW_SPEED", "1.0"))
+ERP_URL = os.environ.get("ZW_ERP_URL", "http://erp-mock:8000")
 
 
 class Simulation:
@@ -47,7 +49,13 @@ class Simulation:
         self.running = False
         self._published_lots: set[str] = set()
         self._published_cells: dict[str, str] = {}
+        self._published_orders: set[str] = set()
         self.ticks = 0
+        # Auftragsanbindung (SPEC §7.1): der Mischer fertigt gegen einen
+        # Fertigungsauftrag, und dessen Nummer wandert über die Genealogie bis
+        # zur Zelle.
+        self.erp = ErpClient(ERP_URL)
+        self._known_cells: set[str] = set()
 
     # ------------------------------------------------------------ Lebenszyklus
     async def start_opcua(self) -> None:
@@ -74,8 +82,22 @@ class Simulation:
             await asyncio.sleep(TICK_S / SPEED)
 
     async def _tick_once(self) -> None:
+        # Der laufende Auftrag steuert, unter welcher Nummer der Mischer ansetzt.
+        order = self.erp.current()
+        self.factory.mixer.active_order = order.id if order else None
+
         werte = self.factory.step(TICK_S)
         self.ticks += 1
+
+        # Jede neu entstandene Zelle auf den Auftrag buchen.
+        for serial, cell in self.factory.genealogy.cells.items():
+            if serial in self._known_cells:
+                continue
+            self._known_cells.add(serial)
+            if cell.order_id is None:
+                cell.order_id = self.erp.count_cell()
+            else:
+                self.erp.count_cell()
         for server in self.servers:
             if (pvs := werte.get(server.station.station_id)) is not None:
                 await server.publish(pvs)
@@ -94,6 +116,20 @@ class Simulation:
         jetzt = datetime.now(UTC).isoformat()
         neue: list[tuple[str, dict]] = []
 
+        # Fertigungsaufträge zuerst: ein Los verweist per Fremdschlüssel auf
+        # seinen Auftrag. Käme das Los vorher an, schlüge sein INSERT fehl und
+        # die Genealogie hätte eine Lücke.
+        for auftrag in self.erp.summary():
+            if auftrag["id"] in self._published_orders:
+                continue
+            self._published_orders.add(auftrag["id"])
+            neue.append((
+                f"zellwerk/v1/{SITE}/erp/trace/order",
+                {"ts": jetzt, "quality": "good", "unit": "",
+                 "value": {"order_id": auftrag["id"], "produkt": auftrag["produkt"],
+                           "sollmenge": auftrag["sollmenge"], "status": "laufend"}},
+            ))
+
         for lot_id, lot in self.factory.genealogy.lots.items():
             if lot_id in self._published_lots:
                 continue
@@ -104,7 +140,7 @@ class Simulation:
                     "ts": jetzt,
                     "value": {
                         "lot_id": lot.id, "station": lot.station, "material": lot.material,
-                        "parent_id": lot.parent_id,
+                        "parent_id": lot.parent_id, "order_id": lot.order_id,
                         "traits": {k: round(v, 4) for k, v in lot.traits.items()
                                    if isinstance(v, (int, float))},
                     },
@@ -127,6 +163,7 @@ class Simulation:
                     "ts": jetzt,
                     "value": {"serial": cell.serial, "lot_id": cell.lot_id,
                               "status": cell.status, "grade": cell.grade,
+                              "order_id": cell.order_id,
                               # Die Merkmale tragen die gemessene Kapazität und
                               # die Herkunft — ohne sie kann weder der
                               # Batteriepass noch eine Betroffenheitsanalyse
@@ -200,6 +237,10 @@ SIM = Simulation()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await SIM.start_opcua()
+    # Aufträge holen, bevor der erste Takt läuft — sonst entstünde die erste
+    # Charge ohne Auftragsbezug.
+    anzahl = await SIM.erp.refresh()
+    log.info("Mock-ERP: %d Aufträge übernommen", anzahl)
     task = asyncio.create_task(SIM.run())
     cmd_task = asyncio.create_task(kommando_empfaenger())
     log.info("Musterfabrik läuft — %d Stationen, Takt %.1fs (Speed %.1fx)",
@@ -238,6 +279,8 @@ async def state() -> dict:
             status: sum(1 for c in f.genealogy.cells.values() if c.status == status)
             for status in ("in_prozess", "ok", "ausschuss", "quarantaene")
         },
+        "auftraege": SIM.erp.summary(),
+        "erp_fehler": SIM.erp.last_error,
         "warteschlangen": {
             "slurry": len(f._slurry_queue), "elektrode": len(f._elektrode_queue),
             "kalandriert": len(f._kalander_queue), "formierung": len(f._formier_queue),
