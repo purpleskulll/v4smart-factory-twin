@@ -82,23 +82,46 @@ class StationBridge:
     def __init__(self, cfg: StationConfig) -> None:
         self.cfg = cfg
         self.nodes: dict[str, ua.Node] = {}
+        self._backoff = 1.0
+        self.werte_gesamt = 0
 
     async def run(self, mqtt: aiomqtt.Client) -> None:
+        """Hält die Verbindung zu einer Station und publiziert ihre Werte.
+
+        Der Backoff wird erst zurückgesetzt, wenn tatsächlich DATEN geflossen
+        sind — nicht schon, wenn die Verbindung steht. Der Unterschied ist
+        entscheidend: Steht die Verbindung, scheitert aber jeder Lesevorgang
+        sofort, galt das vorher als Erfolg. Der Abstand blieb bei einer Sekunde,
+        und der Konnektor reihte über Stunden tausende Wiederverbindungen
+        aneinander (gemessen: 7161), während die Datenbank keinen einzigen
+        neuen Wert bekam. Nach außen sah alles gesund aus — der Container lief,
+        die Logs meldeten im Sekundentakt "verbunden".
+        """
         backoff = 1.0
         while True:
             try:
                 async with Client(url=self.cfg.endpoint) as client:
                     await self._discover(client)
                     log.info("%s verbunden: %d Knoten", self.cfg.station, len(self.nodes))
-                    backoff = 1.0
-                    await self._poll_loop(client, mqtt)
+                    # KEIN Zurücksetzen hier — erst nach dem ersten Zyklus,
+                    # der wirklich Werte geliefert hat (siehe _poll_loop).
+                    await self._poll_loop(client, mqtt, on_erfolg=self._backoff_zuruecksetzen)
+                    backoff = self._backoff
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                backoff = self._backoff
                 log.warning("%s getrennt (%s) — neuer Versuch in %.0fs",
                             self.cfg.station, exc, backoff)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                self._backoff = min(backoff * 2, 30.0)
+                backoff = self._backoff
+
+    def _backoff_zuruecksetzen(self) -> None:
+        """Wird gerufen, sobald ein Poll-Zyklus echte Werte geliefert hat."""
+        if self._backoff != 1.0:
+            log.info("%s liefert wieder Werte", self.cfg.station)
+        self._backoff = 1.0
 
     async def _discover(self, client: Client) -> None:
         """Findet die Variablen der Station im Objektbaum."""
@@ -114,7 +137,8 @@ class StationBridge:
                 if not self.cfg.nodes or var_name in self.cfg.nodes:
                     self.nodes[var_name] = var
 
-    async def _poll_loop(self, client: Client, mqtt: aiomqtt.Client) -> None:
+    async def _poll_loop(self, client: Client, mqtt: aiomqtt.Client,
+                         on_erfolg=None) -> None:
         """Liest die Knoten im Takt und publiziert sie.
 
         Zwei Dinge, die hier aus einem konkreten Ausfall gelernt sind:
@@ -165,7 +189,40 @@ class StationBridge:
                 raise ConnectionError(
                     f"{self.cfg.station}: kein einziger Knoten lesbar — Verbindung erneuern"
                 )
+            # Erst jetzt gilt die Verbindung als wirklich brauchbar: es sind
+            # Werte geflossen, nicht nur ein Handschlag zustande gekommen.
+            gelesen = len(self.nodes) - fehler
+            if gelesen > 0:
+                self.werte_gesamt += gelesen
+                if on_erfolg is not None:
+                    on_erfolg()
+                    on_erfolg = None  # nur beim ersten erfolgreichen Zyklus melden
             await asyncio.sleep(self.cfg.poll_s)
+
+
+async def bericht(bridges: list[StationBridge]) -> None:
+    """Meldet regelmäßig, welche Station liefert und welche nicht.
+
+    Ein Konnektor, der stillschweigend nichts mehr liefert, ist der schlimmste
+    Fall: der Container läuft, die Logs sind ruhig, die Dashboards zeigen
+    einfach keine neuen Werte mehr. Genau das ist hier acht Stunden lang
+    unentdeckt geblieben. Diese Meldung macht es sichtbar.
+    """
+    letzte = {b.cfg.station: 0 for b in bridges}
+    while True:
+        await asyncio.sleep(60)
+        stumm = []
+        zeilen = []
+        for b in bridges:
+            neu = b.werte_gesamt - letzte[b.cfg.station]
+            letzte[b.cfg.station] = b.werte_gesamt
+            zeilen.append(f"{b.cfg.station}={neu}")
+            if neu == 0:
+                stumm.append(b.cfg.station)
+        if stumm:
+            log.warning("KEINE Werte in der letzten Minute von: %s", ", ".join(stumm))
+        else:
+            log.info("Werte je Station (letzte Minute): %s", " ".join(zeilen))
 
 
 async def main() -> None:
@@ -177,7 +234,13 @@ async def main() -> None:
             async with aiomqtt.Client(MQTT_HOST, MQTT_PORT) as mqtt:
                 log.info("MQTT verbunden: %s:%d", MQTT_HOST, MQTT_PORT)
                 bridges = [StationBridge(cfg) for cfg in stations]
-                await asyncio.gather(*(b.run(mqtt) for b in bridges))
+                aufgaben = [asyncio.create_task(b.run(mqtt)) for b in bridges]
+                aufgaben.append(asyncio.create_task(bericht(bridges)))
+                try:
+                    await asyncio.gather(*aufgaben)
+                finally:
+                    for a in aufgaben:
+                        a.cancel()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
